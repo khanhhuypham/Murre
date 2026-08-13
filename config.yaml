@@ -1,0 +1,197 @@
+# =============================================================================
+# config.yaml — Tệp cấu hình trung tâm cho toàn bộ pipeline MURRE
+# Mọi tham số của dự án đều được đặt tại đây.
+# Không cần chỉnh sửa bất kỳ file .py nào khi muốn thay đổi cấu hình.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# CẤU HÌNH CHUNG
+# -----------------------------------------------------------------------------
+general:
+    # Tên dataset muốn chạy: "spider" hoặc "bird"
+    dataset: spider
+
+    # Kích thước SGPT model: "125m", "1.3b", "2.7b", "5.8b"
+    # Model càng lớn → kết quả càng tốt nhưng cần RAM nhiều hơn
+    scale: 125m
+
+    # Số lượng top-K bảng để đánh giá recall
+#    top_k: [3, 5, 10, 20, 30, 50, 100]
+    top_k: [3, 5]
+    # Seed ngẫu nhiên để tái hiện kết quả
+    random_seed: 42
+
+# -----------------------------------------------------------------------------
+# CẤU HÌNH MÔ HÌNH ENCODER (SGPT)
+# -----------------------------------------------------------------------------
+encoder:
+    # Tên model HuggingFace — tự động tải về lần đầu tiên
+    # Các lựa chọn theo thứ tự tăng dần về chất lượng/RAM:
+    #   "Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit"  (~500MB)
+    #   "Muennighoff/SGPT-1.3B-weightedmean-msmarco-specb-bitfit"  (~5GB)
+    #   "Muennighoff/SGPT-5.8B-weightedmean-msmarco-specb-bitfit"  (~23GB)
+    model_name: Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit
+
+    # Số lượng văn bản xử lý song song — giảm nếu gặp lỗi hết RAM
+    batch_size: 256
+
+# -----------------------------------------------------------------------------
+# CẤU HÌNH LLM (dùng cho bước Rewrite và sinh SQL)
+# -----------------------------------------------------------------------------
+llm:
+    # Tên model. Ví dụ:
+    #   OpenAI:  gpt-3.5-turbo, gpt-4o-mini, gpt-4o
+    #   Groq:    llama-3.1-8b-instant
+    #   Ollama:  qwen2.5:7b, qwen2.5:14b, qwen2.5-coder:7b, llama3.2, ...
+    active_profile: qwen2.5-0.5b
+    # Khai báo sẵn nhiều "profile" LLM, mỗi profile là 1 model/endpoint riêng.
+    # Thêm profile mới bằng cách copy 1 khối dưới đây và đổi tên/model_name.
+
+    profiles:
+
+        qwen2.5-7b:
+            model_name: qwen2.5:7b
+            api_key: ""
+            base_url: "http://localhost:11434/v1"
+            temperature: 0.0
+
+        qwen2.5-14b:
+            model_name: qwen2.5:14b
+            api_key: ""
+            base_url: "http://localhost:11434/v1"
+            temperature: 0.0
+
+        qwen2.5-coder-7b:
+            model_name: qwen2.5-coder:7b
+            api_key: ""
+            base_url: "http://localhost:11434/v1"
+            temperature: 0.0
+
+        qwen2.5-0.5b:
+            model_name: qwen2.5:0.5b
+            api_key: ""
+            base_url: "http://localhost:11434/v1"
+            temperature: 0.0
+
+        smollm2-135m:
+            model_name: smollm2:135m
+            api_key: ""
+            base_url: "http://localhost:11434/v1"
+            temperature: 0.0
+
+        llama3.2-1b:
+            model_name: llama3.2:1b
+            api_key: ""
+            base_url: "http://localhost:11434/v1"
+            temperature: 0.0
+
+        llama3.2:
+            model_name: llama3.2:3b
+            api_key: ""
+            base_url: "http://localhost:11434/v1"
+            temperature: 0.0
+
+        openai-gpt-3.5-turbo:
+            model_name: gpt-3.5-turbo    # Model dùng trong paper gốc (§4.1)
+            api_key: ""                   # để trống, điền qua .env: OPENAI_API_KEY
+            base_url: ""                  # để trống → dùng endpoint OpenAI mặc định
+            temperature: 0.0
+
+        groq-llama-3.1-8b:
+            model_name: llama-3.1-8b-instant
+            api_key: ""                   # điền qua .env: OPENAI_API_KEY (dùng key của Groq)
+            base_url: "https://api.groq.com/openai/v1"
+            temperature: 0.0
+
+# -----------------------------------------------------------------------------
+# CẤU HÌNH PIPELINE MURRE
+# -----------------------------------------------------------------------------
+pipeline:
+    # "murre" | "single_hop" | "crush" — Bảng 2/3 của paper
+    method: murre
+    # Số lượng beam duy trì tại mỗi hop (bài báo: 5)
+    # Tăng → kết quả tốt hơn nhưng tốn API call hơn
+    beam_size: 5
+
+    # Số hop tối đa (bài báo: 3)
+    # Lý do: >98% câu hỏi trong SpiderUnion và BirdUnion cần ≤ 3 bảng
+    max_hop: 3
+
+    # Số lượng bảng tối đa lấy từ corpus tại mỗi hop để thu hẹp không gian tìm kiếm
+    # Hop 1+: chỉ search trong top_k_pool kết quả của hop 0
+    top_k_pool: 100
+
+    # Số lượng bảng đầu ra cuối cùng để truyền vào bước sinh SQL
+    top_n_output: 5
+
+    ablation:
+        removal: true     # false = "w/o removal": nối (splice) câu hỏi + bảng đã tìm, thay vì Removal
+        tabulation: true  # false = "w/o tabulation": Removal trả về câu hỏi tự nhiên, không ép sang dạng schema
+        early_stop: true  # false = "w/o early stop": luôn chạy đủ max_hop, không cho phép dừng sớm
+
+# -----------------------------------------------------------------------------
+# CẤU HÌNH ĐƯỜNG DẪN FILE
+# -----------------------------------------------------------------------------
+paths:
+    # --- Dữ liệu đầu vào ---
+    spider:
+        tables: dataset/spider/tables.json
+        dev: dataset/spider/dev.json
+        gold: dataset/spider/gold.txt
+        prompt: prompts/spider_rewrite.txt
+        prompt_no_tabulation: prompts/spider_rewrite_no_tabulation.txt
+        prompt_crush: prompts/spider_crush.txt
+
+    bird:
+        tables: dataset/bird/tables.json
+        dev: dataset/bird/dev.json
+        gold: dataset/bird/gold.txt
+        prompt: prompts/bird_rewrite.txt
+        prompt_no_tabulation: prompts/bird_rewrite_no_tabulation.txt
+        prompt_crush: prompts/bird_crush.txt
+
+    # --- File trung gian và đầu ra ---
+    # {dataset} và {scale} sẽ được thay tự động theo general.dataset và general.scale
+    embeddings: outputs/{dataset}/{scale}/embeddings.json
+    # --- Cache embeddings (lưu dưới dạng .pt để load nhanh hơn JSON) ---
+    embeddings_cache: outputs/{dataset}_embeddings.pt
+    turn0: outputs/{dataset}/{scale}/{method}/turn0/dev.json
+    rewrite_output: outputs/{dataset}/{scale}/{method}/rewrite/outputs/turn{hop}
+    turn_n: outputs/{dataset}/{scale}/{method}/turn{hop}/dev.{beam}.json
+    result: outputs/{dataset}/{scale}/{method}/result/turn{max_hop}/dev.json
+    score: outputs/{dataset}/{scale}/{method}/result/turn{max_hop}/score.json
+    sql: outputs/{dataset}/{scale}/{method}/result/turn{max_hop}/sql.{k}.txt
+
+
+# -----------------------------------------------------------------------------
+# CẤU HÌNH LOGGING
+# -----------------------------------------------------------------------------
+logging:
+    # Mức độ log: DEBUG | INFO | WARNING | ERROR
+    level: DEBUG
+
+    # true → ghi log ra file (thêm vào, không ghi đè), ngoài việc vẫn in ra console.
+    log_to_file: true
+
+    # Thư mục và tên file log (chỉ dùng khi log_to_file: true)
+    log_dir: outputs/logs
+    log_file: murre.log
+
+# -----------------------------------------------------------------------------
+# CẤU HÌNH API SERVICE (FastAPI)
+# -----------------------------------------------------------------------------
+api:
+    host: "0.0.0.0"
+    port: 8000
+
+    # Số bảng trả về tối đa qua API
+    default_top_n: 5
+
+# -----------------------------------------------------------------------------
+# OPTION CHẠY PIPELINE
+# Xem HUONG_DAN.md để biết cách chuyển đổi giữa hai option
+# -----------------------------------------------------------------------------
+run_option:
+    # Option 1: "offline" — chạy toàn bộ pipeline trong Python (dùng để debug/học)
+    # Option 2: "batch"   — chạy từng bước riêng lẻ qua file steps/*.py (production)
+    mode: offline # Đổi thành "batch" để chạy từng bước
