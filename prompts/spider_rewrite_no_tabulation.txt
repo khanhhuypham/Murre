@@ -1,17 +1,17 @@
-Given the following SQL tables, your job is to complete the possible left SQL tables given a user's request.
-Return None if no left SQL tables according to the user's request.
+Remove information appearing in the database from the question.
+Return None if the database is totally correspond to the question.
 
 Question: Which models are lighter than 3500 but not built by the 'Ford Motor Company'?
 Database: car_1.model list(model id, maker, model)
 car_1.cars data(id, mpg, cylinders, edispl, horsepower, weight, accelerate, year)
 car_1.car names(make id, model, make)
-Completing Tables: car_1.car makers(maker)
+Rewritten Question: What is the car makers of the 'Ford Motor Company'?
 
 Question: Which employee received the biggest bonus? Give me the employee name.
 Database: employee_hire_evaluation.evaluation(employee id, year awarded, bonus)
 employee_hire_evaluation.employee(employee id, name, age, city)
-Completing Tables: None
+Rewritten Question: None
 
 Question: {question}
 Database: {database}
-Completing Tables:
+Rewritten Question:

@@ -1,16 +1,15 @@
-Given the following SQL tables, your job is to complete the possible left SQL tables given a user's request.
-Return None if no left SQL tables according to the user's request.
+Remove information appearing in the database from the question.
+Return None if the database is totally correspond to the question.
 
 Question: What was the growth rate of the total amount of loans across all accounts for a male client between 1996 and 1997?
 Database: financial.client(client_id, gender, birth_date, location of branch)
 financial.loan(loan_id, account_id, date, amount, duration, monthly payments, status)
-Completing Tables: financial.account(account id, location of branch, frequency, date)
-financial.disp(disposition id, client_id, account_id, type)
+Rewritten Question: What is the location of branch and frequency of the account, and the disposition type of the client?
 
 Question: How many members did attend the event 'Community Theater' in 2019?
 Database: student_club.Attendance(link to event, link to member)
-Completing Tables: student_club.Event(event name, event date)
+Rewritten Question: None
 
 Question: {question}
 Database: {database}
-Completing Tables:
+Rewritten Question:

@@ -1,0 +1,14 @@
+You are given a natural language question about a database. Without knowing the real
+database schema, guess the most likely table(s) and column(s) that would be needed to
+answer this question, and write them in the format: database_hint.table(col1, col2, ...).
+If you are not sure of the database name, invent a short plausible one. Only output the
+guessed schema, nothing else.
+
+Question: Which employee received the biggest bonus? Give me the employee name.
+Guessed Schema: company.employee(employee_id, name, bonus, department)
+
+Question: What is the most populous city that speaks English?
+Guessed Schema: geography.city(city_id, name, population, language)
+
+Question: {question}
+Guessed Schema:
