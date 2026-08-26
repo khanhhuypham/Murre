@@ -1,5 +1,9 @@
 # =============================================================================
-# core/pipeline.py — Pipeline MURRE chạy trong bộ nhớ (in-process)
+# methods/murre.py — Phương pháp chính MURRE, chạy trong bộ nhớ (in-process)
+#
+# Cùng nhóm với methods/single_hop.py và methods/crush.py: cả 3 đều là một
+# retriever với cùng interface run(question, corpus, schema_embeddings, verbose),
+# và đều được build_retriever() (core/factory.py) trả về theo cfg.pipeline.method.
 #
 # File này dành cho MỤC ĐÍCH HỌC VÀ DEBUG:
 #   - Toàn bộ pipeline chạy trong 1 lần gọi pipeline.run()
@@ -28,8 +32,10 @@
 #   python -m main --question "Which airlines have a flight to AHD?" --verbose
 #   python -m main                          # dùng câu hỏi mẫu đầu tiên trong dev.json
 #
-# File này KHÔNG có entry point __main__ riêng — chỉ được gọi gián tiếp thông qua
-# main.py (hàm run_offline), không chạy trực tiếp bằng "python core/pipeline.py".
+# CHẠY/TEST ĐỘC LẬP (xem khối __main__ ở cuối file):
+#   python -m methods.murre
+#   python -m methods.murre --question "..." --verbose
+#   python -m methods.murre --beam_size 2 --max_hop 1      # chạy nhanh khi debug
 # =============================================================================
 
 import math
@@ -341,3 +347,56 @@ class MURREPipeline:
                 logger.info(f"  {i + 1}. {schema}  (score={score:.4f})")
 
         return [{"schema": s, "score": sc} for s, sc in ranked]
+
+
+# =============================================================================
+# ĐIỂM CHẠY ĐỘC LẬP — test riêng method này với 1 câu hỏi
+# =============================================================================
+if __name__ == "__main__":
+    from core.corpus import prepare
+    from core.llm import LLMGenerator
+    from dataset.loader import load_dev, resolve_question
+    from methods._cli import print_results
+
+    # --- Chỉnh trực tiếp mấy biến này để test ------------------------------
+    DATASET: str | None = None       # None → dùng general.dataset của config.yaml
+    if DATASET:
+        # Phải set TRƯỚC load_dev(), nếu không sẽ đọc dev.json của dataset cũ.
+        cfg.general.dataset = DATASET
+
+    # Lấy câu số 21 của dev.json (câu cần 3 bảng — đúng ca multi-hop mà MURRE nhắm tới).
+    # Đổi số trong [] để test câu khác; đặt None để lấy câu đầu tiên; hoặc gõ thẳng
+    # một chuỗi tự viết (khi đó không tra được gold nên sẽ không có ✓ và recall).
+    QUESTION: str | None = load_dev()[21]["utterance"]
+    TOP_N: int = 5                   # số bảng in ra
+    LLM_PROFILE: str | None = None   # None → dùng llm.active_profile
+    VERBOSE: bool = False            # True: in chi tiết từng hop (Removal, retrieve, early stop)
+    BEAM_SIZE: int | None = None     # None → theo pipeline.beam_size; để 2 cho nhanh khi debug
+    MAX_HOP: int | None = None       # None → theo pipeline.max_hop; để 1 cho nhanh khi debug
+    # ----------------------------------------------------------------------
+
+    # Ghi đè config TRƯỚC khi khởi tạo pipeline, vì MURREPipeline.__init__ đọc
+    # beam_size/max_hop/ablation từ cfg một lần duy nhất.
+    if BEAM_SIZE is not None:
+        cfg.pipeline.beam_size = BEAM_SIZE
+    if MAX_HOP is not None:
+        cfg.pipeline.max_hop = MAX_HOP
+
+    encoder, corpus, embs = prepare(dataset=DATASET)
+    question: str = resolve_question(question=QUESTION)
+
+    ab = cfg.pipeline.ablation
+    print()
+    print(
+        f"  Cấu hình: beam_size={cfg.pipeline.beam_size}, max_hop={cfg.pipeline.max_hop}, "
+        f"removal={ab.removal}, tabulation={ab.tabulation}, early_stop={ab.early_stop}"
+    )
+
+    pipeline = MURREPipeline(
+        encoder=encoder,
+        rewriter=QueryRewriter(llm=LLMGenerator(profile=LLM_PROFILE)),
+    )
+    results = pipeline.run(
+        question=question, corpus=corpus, schema_embeddings=embs, verbose=VERBOSE,
+    )
+    print_results(method="MURRE", question=question, results=results, top_n=TOP_N)

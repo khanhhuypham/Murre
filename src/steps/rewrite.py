@@ -154,11 +154,15 @@ def run_rewrite(hop: int) -> None:
 
     # ── Giai đoạn 1: Sample beams ─────────────────────────────────────────
     # Đường dẫn thư mục chứa kết quả retrieve của hop trước
+    # Beam sampling luôn đọc KẾT QUẢ RETRIEVE của chính hop này (thư mục turn{hop}/),
+    # vì _sample_beams() cần trường "retrieved" — thứ chỉ steps/retrieve.py sinh ra.
+    # Thư mục rewrite/outputs/turn{hop}/ chỉ chứa câu hỏi đã viết lại (không có
+    # "retrieved"), nên đọc từ đó sẽ lỗi KeyError: 'retrieved'.
     retrieved_dir: str
     if hop == 0:
         retrieved_dir = os.path.dirname(get_path(key="turn0"))
     else:
-        retrieved_dir = get_path(key="rewrite_output", hop=hop - 1)
+        retrieved_dir = os.path.dirname(get_path(key="turn_n", hop=hop, beam=0))
 
     logger.info(f"[Rewrite] Lấy mẫu beams từ: {retrieved_dir}")
     beam_samples: List[List[Dict[str, Any]]] = _sample_beams(retrieved_dir=retrieved_dir, top_k=beam_size)

@@ -3,7 +3,7 @@
 # =============================================================================
 import os
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from config import get_dataset_path
 from utils import logger
 
@@ -37,6 +37,45 @@ def load_dev() -> List[Dict[str, Any]]:
     data: List[Dict[str, Any]] = _load_json(path=path)
     logger.info(f"[Loader] Đã tải {len(data)} câu hỏi từ: {path}")
     return data
+
+
+_DEV_CACHE: Dict[str, List[Dict[str, Any]]] = {}
+
+
+def _dev_cached() -> List[Dict[str, Any]]:
+    """load_dev() nhưng nhớ kết quả — resolve_question() và gold_for() hay được gọi
+    liền nhau trong 1 lần test, không cần đọc & parse dev.json hai lần.
+
+    Cache theo đường dẫn nên đổi general.dataset giữa chừng vẫn ra dữ liệu đúng.
+    """
+    path: str = get_dataset_path(key="dev")
+    if path not in _DEV_CACHE:
+        _DEV_CACHE[path] = load_dev()
+    return _DEV_CACHE[path]
+
+
+def resolve_question(question: Optional[str] = None) -> str:
+    """Trả về 1 câu hỏi để test — tự lấy câu đầu dev.json nếu không truyền question.
+
+    Dùng cho khối `__main__` của các file trong methods/: chỉ cần set QUESTION=None
+    là có ngay câu hỏi mẫu, khỏi phải copy tay từ dev.json.
+    """
+    if question:
+        return question
+
+    data: List[Dict[str, Any]] = _dev_cached()
+    if not data:
+        raise SystemExit("dev.json rỗng — hãy truyền question=\"...\"")
+    return data[0].get("utterance", "")
+
+
+def gold_for(question: str) -> List[str]:
+    """Schema đúng (rel_schema) của 1 câu hỏi, nếu nó có trong dev.json — để đối chiếu
+    nhanh xem method retrieve đúng hay sai. Không tra được thì trả list rỗng."""
+    for d in _dev_cached():
+        if d.get("utterance", "").strip() == question.strip():
+            return d.get("rel_schema", [])
+    return []
 
 
 def load_gold() -> List[str]:

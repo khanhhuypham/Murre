@@ -8,16 +8,23 @@ from typing import Union
 from config import cfg
 from core.encoder import SGPTEncoder
 from core.llm import LLMGenerator
-from core.pipeline import MURREPipeline
 from core.rewriter import QueryRewriter
 from methods.crush import CrushRetriever
+from methods.murre import MURREPipeline
 from methods.single_hop import SingleHopRetriever
 
 RetrieverType = Union[MURREPipeline, SingleHopRetriever, CrushRetriever]
 
 
-def build_retriever(encoder: SGPTEncoder, llm: LLMGenerator | None = None) -> RetrieverType:
-    """Trả về đúng retriever theo cfg.pipeline.method ("murre" | "single_hop" | "crush")."""
+def build_retriever(
+    encoder: SGPTEncoder,
+    llm: LLMGenerator | None = None,
+    crush_collective: bool = True,
+) -> RetrieverType:
+    """Trả về đúng retriever theo cfg.pipeline.method ("murre" | "single_hop" | "crush").
+
+    crush_collective: chỉ dùng cho method="crush" — xem CrushRetriever.collective.
+    """
     method: str = cfg.pipeline.method.lower()
 
     if method == "murre":
@@ -30,6 +37,6 @@ def build_retriever(encoder: SGPTEncoder, llm: LLMGenerator | None = None) -> Re
 
     if method == "crush":
         assert llm is not None, "CRUSH cần LLMGenerator để hallucinate schema."
-        return CrushRetriever(encoder=encoder, llm=llm)
+        return CrushRetriever(encoder=encoder, llm=llm, collective=crush_collective)
 
     raise ValueError(f"pipeline.method='{method}' không hợp lệ. Chỉ nhận: murre | single_hop | crush")

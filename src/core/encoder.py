@@ -10,7 +10,7 @@
 # =============================================================================
 
 import math
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import torch
 from transformers import (

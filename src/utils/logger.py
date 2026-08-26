@@ -56,6 +56,12 @@ def _build_logger(name: str = "murre") -> logging.Logger:
             datefmt="%H:%M:%S",
         )
 
+        # Console Windows mặc định là cp1252 → log tiếng Việt gây UnicodeEncodeError
+        # ("charmap codec can't encode character"). Ép stdout sang UTF-8 và thay ký tự
+        # không hiển thị được bằng "?" thay vì làm sập dòng log.
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
         stream_handler: logging.StreamHandler = logging.StreamHandler(stream=sys.stdout)
         stream_handler.setFormatter(fmt=formatter)
         log.addHandler(hdlr=stream_handler)

@@ -16,8 +16,8 @@ general:
     scale: 125m
 
     # Số lượng top-K bảng để đánh giá recall
-#    top_k: [3, 5, 10, 20, 30, 50, 100]
-    top_k: [3, 5]
+    # Table 2/3 của paper báo cáo k/r tại 3, 5, 10, 20
+    top_k: [3, 5, 10, 20]
     # Seed ngẫu nhiên để tái hiện kết quả
     random_seed: 42
 
@@ -154,7 +154,7 @@ paths:
     # {dataset} và {scale} sẽ được thay tự động theo general.dataset và general.scale
     embeddings: outputs/{dataset}/{scale}/embeddings.json
     # --- Cache embeddings (lưu dưới dạng .pt để load nhanh hơn JSON) ---
-    embeddings_cache: outputs/{dataset}_embeddings.pt
+    embeddings_cache: outputs/{dataset}_{scale}_embeddings.pt
     turn0: outputs/{dataset}/{scale}/{method}/turn0/dev.json
     rewrite_output: outputs/{dataset}/{scale}/{method}/rewrite/outputs/turn{hop}
     turn_n: outputs/{dataset}/{scale}/{method}/turn{hop}/dev.{beam}.json

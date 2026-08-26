@@ -28,7 +28,7 @@
 #
 # Lưu ý: nếu chạy trực tiếp bằng đường dẫn file (python src/steps/retrieve.py ...)
 # thay vì "python -m steps.retrieve", cần đảm bảo src/ đã có trong sys.path
-# (xem HUONG_DAN.md mục 2 — file .pth hoặc PYTHONPATH=src), nếu không sẽ gặp
+# (xem HUONG_DAN.md mục 11 — file .pth hoặc PYTHONPATH=src), nếu không sẽ gặp
 # ModuleNotFoundError: No module named 'config'.
 # =============================================================================
 
@@ -151,14 +151,14 @@ def run_retrieve(
     ]
 
     # Mã hóa phẳng rồi nhóm lại
-    idx_map: List[Tuple[int, str]] = [
+    indexed_subqueries: List[Tuple[int, str]] = [
         (qi, q_line) for qi, q_lines in enumerate(queries) for q_line in q_lines
     ]
-    logger.info(f"[Retrieve] Mã hóa {len(idx_map)} chuỗi câu hỏi ...")
-    flat_embs: torch.Tensor = encoder.encode(texts=[x[1] for x in idx_map], is_query=True)
+    logger.info(f"[Retrieve] Mã hóa {len(indexed_subqueries)} chuỗi câu hỏi ...")
+    flat_embs: torch.Tensor = encoder.encode(texts=[x[1] for x in indexed_subqueries], is_query=True)
 
     query_embs_grouped: List[List[torch.Tensor]] = [[] for _ in range(len(queries))]
-    for i, (qi, _) in enumerate(idx_map):
+    for i, (qi, _) in enumerate(indexed_subqueries):
         query_embs_grouped[qi].append(flat_embs[i])
 
     # ── Retrieve ───────────────────────────────────────────────────────────

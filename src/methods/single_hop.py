@@ -42,3 +42,34 @@ class SingleHopRetriever:
             {"schema": corpus[idx], "score": float(val)}
             for idx, val in zip(top_idx.tolist(), top_vals.tolist())
         ]
+
+
+# =============================================================================
+# ĐIỂM CHẠY ĐỘC LẬP — test riêng method này với 1 câu hỏi
+# =============================================================================
+if __name__ == "__main__":
+    from core.corpus import prepare
+    from dataset.loader import load_dev, resolve_question
+    from methods._cli import print_results
+
+    # --- Chỉnh trực tiếp mấy biến này để test ------------------------------
+    DATASET: str | None = None       # None → dùng general.dataset của config.yaml
+    if DATASET:
+        # Phải set TRƯỚC load_dev(), nếu không sẽ đọc dev.json của dataset cũ.
+        cfg.general.dataset = DATASET
+
+    # Lấy câu số 21 của dev.json (câu cần 3 bảng). Đổi số trong [] để test câu khác;
+    # đặt None để lấy câu đầu tiên; hoặc gõ thẳng một chuỗi tự viết (khi đó không tra
+    # được gold nên sẽ không có ✓ và recall).
+    QUESTION: str | None = load_dev()[21]["utterance"]
+    TOP_N: int = 5                   # số bảng in ra
+    # ----------------------------------------------------------------------
+
+    encoder, corpus, embs = prepare(dataset=DATASET)
+    question: str = resolve_question(question=QUESTION)
+
+    retriever = SingleHopRetriever(encoder=encoder)
+    results = retriever.run(
+        question=question, corpus=corpus, schema_embeddings=embs, verbose=False,
+    )
+    print_results(method="Single-hop", question=question, results=results, top_n=TOP_N)

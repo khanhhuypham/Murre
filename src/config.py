@@ -16,7 +16,19 @@ from typing import Dict, Any, List, Optional
 import yaml
 from dotenv import load_dotenv
 
-# Tải biến môi trường từ file .env (nếu có)
+# =============================================================================
+# Neo thư mục làm việc về GỐC PROJECT (nơi chứa config.yaml).
+#
+# File này nằm ở src/config.py → gốc project = thư mục cha của src/.
+# Mọi đường dẫn trong config.yaml (outputs/, dataset/, prompts/) đều tương đối
+# so với gốc project, nên ta chuyển cwd về gốc ngay khi import config. Nhờ vậy
+# lệnh chạy đúng dù được gọi từ bất kỳ đâu (PyCharm right-click Run, terminal
+# trong src/steps/, v.v.) — không còn lỗi "Không tìm thấy config.yaml".
+# =============================================================================
+PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
+os.chdir(PROJECT_ROOT)
+
+# Tải biến môi trường từ file .env (nếu có) — đọc từ gốc project sau khi chdir
 load_dotenv()
 
 
@@ -103,7 +115,7 @@ def list_llm_profiles() -> List[str]:
     """Trả về tên tất cả profile LLM đã khai báo trong config.yaml (llm.profiles).
 
     Dùng khi bạn có nhiều model local (Ollama) muốn chuyển đổi qua lại — mỗi model
-    khai báo thành 1 profile trong config.yaml, xem HUONG_DAN.md mục 4b.
+    khai báo thành 1 profile trong config.yaml, xem HUONG_DAN.md mục 3b.
     """
     return list(cfg.llm.profiles.__dict__.keys())
 
