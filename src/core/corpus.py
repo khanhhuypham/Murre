@@ -11,7 +11,7 @@ from typing import List, Optional, Tuple
 
 import torch
 
-from config import cfg, get_path
+from config import cfg
 from core.encoder import SGPTEncoder
 from dataset.loader import load_tables
 from utils import logger
@@ -35,7 +35,7 @@ def load_embeddings(
     Cache nằm ở paths.embeddings_cache — có cả {dataset} và {scale} trong tên, nên
     đổi encoder scale sẽ dùng file cache khác chứ không nạp nhầm vector cũ.
     """
-    cache_path: str = get_path(key="embeddings_cache", dataset=dataset or cfg.general.dataset)
+    cache_path: str = cfg.outputs.for_run(dataset=dataset).embeddings_cache()
 
     if os.path.exists(cache_path):
         logger.info(f"[Corpus] Nạp embeddings từ cache: {cache_path}")

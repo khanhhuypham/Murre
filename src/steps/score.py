@@ -13,9 +13,9 @@ import math
 import os
 from typing import Any, Dict, List, Tuple
 
-from config import cfg, get_path
+from config import cfg
 from utils import logger
-from utils.metric import compute_recall_at_k, compute_res
+from utils.metrics import compute_recall_at_k, compute_res
 
 _EARLY_STOP_INDICATORS: List[str] = [
     "There is no",
@@ -56,12 +56,12 @@ def run_score() -> None:
 
     retrieved_data: List[List[List[Dict[str, Any]]]] = []
 
-    turn0_file: str = get_path(key="turn0")
+    turn0_file: str = cfg.outputs.turn0()
     with open(turn0_file, "r", encoding="utf-8") as f:
         retrieved_data.append([json.load(f)])
 
     for hop in range(1, max_hop + 1):
-        turn_dir: str = os.path.dirname(get_path(key="turn_n", hop=hop, beam=0))
+        turn_dir: str = os.path.dirname(cfg.outputs.turn_n(hop=hop, beam=0))
         hop_files: List[str] = _find_json_files(directory=turn_dir)
         if not hop_files:
             break
@@ -143,8 +143,8 @@ def run_score() -> None:
         base["recall"] = recall
         final_output.append(base)
 
-    result_file: str = get_path(key="result")
-    score_file: str = get_path(key="score")
+    result_file: str = cfg.outputs.result()
+    score_file: str = cfg.outputs.score()
     os.makedirs(os.path.dirname(result_file), exist_ok=True)
 
     with open(result_file, "w", encoding="utf-8") as f:

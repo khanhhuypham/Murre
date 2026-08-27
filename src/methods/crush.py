@@ -23,7 +23,7 @@ from typing import Any, Dict, List
 import torch
 import torch.nn.functional as F
 
-from config import cfg, get_dataset_path
+from config import cfg
 from core.encoder import SGPTEncoder
 from core.llm import LLMGenerator
 
@@ -49,7 +49,7 @@ class CrushRetriever:
         # (xem LLM đoán sai schema ở đâu).
         self.last_hallucinated: str = ""
 
-        prompt_path: str = get_dataset_path(key="prompt_crush")
+        prompt_path: str = cfg.dataset_paths.prompt_crush
         with open(prompt_path, "r", encoding="utf-8") as f:
             self.prompt_template: str = "\n".join(line.rstrip("\n") for line in f)
 

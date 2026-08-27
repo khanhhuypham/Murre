@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Tuple, Optional
 
 import torch
 from scipy.spatial.distance import cosine
-from config import cfg, get_dataset_path, get_path
+from config import cfg
 from core.encoder import SGPTEncoder
 from utils import logger
 from utils.metrics import compute_recall
@@ -108,7 +108,7 @@ def run_retrieve(
     logger.info(f"\n{'=' * 60}\n  BƯỚC 2: RETRIEVAL — Hop {hop}" + (f" | Beam {beam}" if beam is not None else "") + f"\n{'=' * 60}")
 
     # ── Tải embeddings corpus ──────────────────────────────────────────────
-    emb_path: str = get_path(key="embeddings")
+    emb_path: str = cfg.outputs.embeddings()
     logger.info(f"[Retrieve] Tải embeddings từ: {emb_path}")
     with open(emb_path, "r", encoding="utf-8") as f:
         original_docs: List[Dict[str, Any]] = json.load(f)
@@ -122,9 +122,9 @@ def run_retrieve(
     # ── Tải câu hỏi ───────────────────────────────────────────────────────
     if queries_file is None:
         if hop == 0:
-            queries_file = get_dataset_path(key="dev")
+            queries_file = cfg.dataset_paths.dev
         else:
-            queries_file = get_path(key="rewrite_output", hop=hop - 1) + f"/dev.{beam}.json"
+            queries_file = cfg.outputs.rewrite_output(hop=hop - 1) + f"/dev.{beam}.json"
 
     logger.info(f"[Retrieve] Tải câu hỏi từ: {queries_file}")
     with open(queries_file, "r", encoding="utf-8") as f:
@@ -133,7 +133,7 @@ def run_retrieve(
     # ── Xác định pool tìm kiếm ────────────────────────────────────────────
     last_retrieved_data: List[Dict[str, Any]] = []
     if last_retrieved_file is None and hop > 0:
-        last_retrieved_file = get_path(key="turn0")
+        last_retrieved_file = cfg.outputs.turn0()
 
     if last_retrieved_file:
         logger.info(f"[Retrieve] Hop {hop}: hẹp pool từ {last_retrieved_file}")
@@ -222,9 +222,9 @@ def run_retrieve(
     # ── Lưu kết quả ───────────────────────────────────────────────────────
     if output_file is None:
         if hop == 0:
-            output_file = get_path(key="turn0")
+            output_file = cfg.outputs.turn0()
         else:
-            output_file = get_path(key="turn_n", hop=hop, beam=beam)
+            output_file = cfg.outputs.turn_n(hop=hop, beam=beam)
 
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, "w", encoding="utf-8") as f:

@@ -1,25 +1,11 @@
 # =============================================================================
-# config.yaml — Tệp cấu hình trung tâm cho toàn bộ pipeline MURRE
-# Mọi tham số của dự án đều được đặt tại đây.
-# Không cần chỉnh sửa bất kỳ file .py nào khi muốn thay đổi cấu hình.
+# config.yaml — Cấu hình encoder SGPT và LLM của MURRE
+#
+# Các section còn lại (general, pipeline, paths, logging, api, run_option) có giá
+# trị mặc định ngay trong src/config.py — xem các class *Config trong đó.
+# Muốn đổi bằng file cấu hình thì thêm lại section tương ứng vào đây, nó sẽ ghi đè
+# mặc định trong code.
 # =============================================================================
-
-# -----------------------------------------------------------------------------
-# CẤU HÌNH CHUNG
-# -----------------------------------------------------------------------------
-general:
-    # Tên dataset muốn chạy: "spider" hoặc "bird"
-    dataset: spider
-
-    # Kích thước SGPT model: "125m", "1.3b", "2.7b", "5.8b"
-    # Model càng lớn → kết quả càng tốt nhưng cần RAM nhiều hơn
-    scale: 125m
-
-    # Số lượng top-K bảng để đánh giá recall
-    # Table 2/3 của paper báo cáo k/r tại 3, 5, 10, 20
-    top_k: [3, 5, 10, 20]
-    # Seed ngẫu nhiên để tái hiện kết quả
-    random_seed: 42
 
 # -----------------------------------------------------------------------------
 # CẤU HÌNH MÔ HÌNH ENCODER (SGPT)
@@ -102,96 +88,3 @@ llm:
             api_key: ""                   # điền qua .env: OPENAI_API_KEY (dùng key của Groq)
             base_url: "https://api.groq.com/openai/v1"
             temperature: 0.0
-
-# -----------------------------------------------------------------------------
-# CẤU HÌNH PIPELINE MURRE
-# -----------------------------------------------------------------------------
-pipeline:
-    # "murre" | "single_hop" | "crush" — Bảng 2/3 của paper
-    method: murre
-    # Số lượng beam duy trì tại mỗi hop (bài báo: 5)
-    # Tăng → kết quả tốt hơn nhưng tốn API call hơn
-    beam_size: 5
-
-    # Số hop tối đa (bài báo: 3)
-    # Lý do: >98% câu hỏi trong SpiderUnion và BirdUnion cần ≤ 3 bảng
-    max_hop: 3
-
-    # Số lượng bảng tối đa lấy từ corpus tại mỗi hop để thu hẹp không gian tìm kiếm
-    # Hop 1+: chỉ search trong top_k_pool kết quả của hop 0
-    top_k_pool: 100
-
-    # Số lượng bảng đầu ra cuối cùng để truyền vào bước sinh SQL
-    top_n_output: 5
-
-    ablation:
-        removal: true     # false = "w/o removal": nối (splice) câu hỏi + bảng đã tìm, thay vì Removal
-        tabulation: true  # false = "w/o tabulation": Removal trả về câu hỏi tự nhiên, không ép sang dạng schema
-        early_stop: true  # false = "w/o early stop": luôn chạy đủ max_hop, không cho phép dừng sớm
-
-# -----------------------------------------------------------------------------
-# CẤU HÌNH ĐƯỜNG DẪN FILE
-# -----------------------------------------------------------------------------
-paths:
-    # --- Dữ liệu đầu vào ---
-    spider:
-        tables: dataset/spider/tables.json
-        dev: dataset/spider/dev.json
-        gold: dataset/spider/gold.txt
-        prompt: prompts/spider_rewrite.txt
-        prompt_no_tabulation: prompts/spider_rewrite_no_tabulation.txt
-        prompt_crush: prompts/spider_crush.txt
-
-    bird:
-        tables: dataset/bird/tables.json
-        dev: dataset/bird/dev.json
-        gold: dataset/bird/gold.txt
-        prompt: prompts/bird_rewrite.txt
-        prompt_no_tabulation: prompts/bird_rewrite_no_tabulation.txt
-        prompt_crush: prompts/bird_crush.txt
-
-    # --- File trung gian và đầu ra ---
-    # {dataset} và {scale} sẽ được thay tự động theo general.dataset và general.scale
-    embeddings: outputs/{dataset}/{scale}/embeddings.json
-    # --- Cache embeddings (lưu dưới dạng .pt để load nhanh hơn JSON) ---
-    embeddings_cache: outputs/{dataset}_{scale}_embeddings.pt
-    turn0: outputs/{dataset}/{scale}/{method}/turn0/dev.json
-    rewrite_output: outputs/{dataset}/{scale}/{method}/rewrite/outputs/turn{hop}
-    turn_n: outputs/{dataset}/{scale}/{method}/turn{hop}/dev.{beam}.json
-    result: outputs/{dataset}/{scale}/{method}/result/turn{max_hop}/dev.json
-    score: outputs/{dataset}/{scale}/{method}/result/turn{max_hop}/score.json
-    sql: outputs/{dataset}/{scale}/{method}/result/turn{max_hop}/sql.{k}.txt
-
-
-# -----------------------------------------------------------------------------
-# CẤU HÌNH LOGGING
-# -----------------------------------------------------------------------------
-logging:
-    # Mức độ log: DEBUG | INFO | WARNING | ERROR
-    level: DEBUG
-
-    # true → ghi log ra file (thêm vào, không ghi đè), ngoài việc vẫn in ra console.
-    log_to_file: true
-
-    # Thư mục và tên file log (chỉ dùng khi log_to_file: true)
-    log_dir: outputs/logs
-    log_file: murre.log
-
-# -----------------------------------------------------------------------------
-# CẤU HÌNH API SERVICE (FastAPI)
-# -----------------------------------------------------------------------------
-api:
-    host: "0.0.0.0"
-    port: 8000
-
-    # Số bảng trả về tối đa qua API
-    default_top_n: 5
-
-# -----------------------------------------------------------------------------
-# OPTION CHẠY PIPELINE
-# Xem HUONG_DAN.md để biết cách chuyển đổi giữa hai option
-# -----------------------------------------------------------------------------
-run_option:
-    # Option 1: "offline" — chạy toàn bộ pipeline trong Python (dùng để debug/học)
-    # Option 2: "batch"   — chạy từng bước riêng lẻ qua file steps/*.py (production)
-    mode: offline # Đổi thành "batch" để chạy từng bước

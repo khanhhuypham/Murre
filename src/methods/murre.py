@@ -54,13 +54,11 @@ class RetrievalHit(TypedDict):
     similarity: float
     global_idx: int
 
-
 class BeamState(TypedDict, total=False):
     path_schemas: List[str]
     path_sims: List[float]
     current_query: str
     early_stopped: bool
-
 
 def _normalize(x: float) -> float:
     """
@@ -69,12 +67,6 @@ def _normalize(x: float) -> float:
     """
     return (x + 1) / 2
 
-# def _pos(x: float) -> float:
-#     """
-#     Hàm pos() dùng trong log-sum path scoring (Appendix E bài báo).
-#     pos(x) = (x + 2) / 2 → đảm bảo giá trị dương để tính log
-#     """
-#     return (x + 2) / 2
 
 
 def _path_score(similarities: List[float]) -> float:

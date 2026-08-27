@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import List
 
+from enums import Dataset, Method
 from pydantic import BaseModel, Field
 
 
@@ -15,8 +16,8 @@ class HealthStatus(BaseModel):
     """
 
     status: str = Field(..., description="'ok' nếu service đang chạy")
-    method: str = Field(..., description="pipeline.method đang cấu hình trong config.yaml")
-    datasets_available: List[str] = Field(..., description="Có dataset/{ds}/tables.json trên đĩa")
-    datasets_loaded: List[str] = Field(..., description="Đã nạp embeddings vào RAM")
+    method: Method = Field(..., description="pipeline.method đang cấu hình trong config.yaml")
+    datasets_available: List[Dataset] = Field(..., description="Có dataset/{ds}/tables.json trên đĩa")
+    datasets_loaded: List[Dataset] = Field(..., description="Đã nạp embeddings vào RAM")
     beam_size: int = Field(..., description="pipeline.beam_size")
     max_hop: int = Field(..., description="pipeline.max_hop")

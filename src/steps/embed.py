@@ -14,7 +14,7 @@ import json
 import os
 from typing import List, Dict, Any
 import torch
-from config import get_path
+from config import cfg
 from core.encoder import SGPTEncoder
 from dataset.loader import load_tables
 from utils.schema import build_schema_corpus
@@ -40,7 +40,7 @@ def run_embed() -> None:
     embeddings: torch.Tensor = encoder.encode(texts=corpus, is_query=False)  # shape: (N, D)
 
     # Chuẩn bị đường dẫn output
-    out_path: str = get_path(key="embeddings")
+    out_path: str = cfg.outputs.embeddings()
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
     # Lưu kết quả theo format của tác giả

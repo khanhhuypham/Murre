@@ -14,7 +14,7 @@ import math
 import os
 from copy import deepcopy
 from typing import Any, Dict, List, Tuple
-from config import cfg, get_path
+from config import cfg
 from core.llm import LLMGenerator
 from core.rewriter import QueryRewriter
 from utils import logger
@@ -160,9 +160,9 @@ def run_rewrite(hop: int) -> None:
     # "retrieved"), nên đọc từ đó sẽ lỗi KeyError: 'retrieved'.
     retrieved_dir: str
     if hop == 0:
-        retrieved_dir = os.path.dirname(get_path(key="turn0"))
+        retrieved_dir = os.path.dirname(cfg.outputs.turn0())
     else:
-        retrieved_dir = os.path.dirname(get_path(key="turn_n", hop=hop, beam=0))
+        retrieved_dir = os.path.dirname(cfg.outputs.turn_n(hop=hop, beam=0))
 
     logger.info(f"[Rewrite] Lấy mẫu beams từ: {retrieved_dir}")
     beam_samples: List[List[Dict[str, Any]]] = _sample_beams(retrieved_dir=retrieved_dir, top_k=beam_size)
@@ -173,7 +173,7 @@ def run_rewrite(hop: int) -> None:
         llm: LLMGenerator = LLMGenerator()
         rewriter = QueryRewriter(llm=llm)
 
-    out_dir: str = get_path("rewrite_output", hop=hop)
+    out_dir: str = cfg.outputs.rewrite_output(hop=hop)
     os.makedirs(out_dir, exist_ok=True)
 
     for beam_idx, beam_data in enumerate(beam_samples):

@@ -8,7 +8,7 @@ import json
 import os
 from typing import Any, Dict, List
 
-from config import get_path
+from config import cfg
 from core.llm import LLMGenerator
 from dataset.loader import load_tables
 from utils import logger
@@ -65,7 +65,7 @@ def run_infer(top_k: int) -> None:
     logger.info(f"  BƯỚC 5: SINH SQL — top_k={top_k}")
     logger.info("=" * 60)
 
-    result_file: str = get_path(key="result")
+    result_file: str = cfg.outputs.result()
     with open(result_file, "r", encoding="utf-8") as f:
         data: List[Dict[str, Any]] = json.load(f)
 
@@ -97,7 +97,7 @@ def run_infer(top_k: int) -> None:
 
         predicted_sqls.append(sql_output)
 
-    sql_file: str = get_path(key="sql", k=top_k)
+    sql_file: str = cfg.outputs.sql(k=top_k)
     inp_file: str = os.path.join(os.path.dirname(sql_file), f"inp.{top_k}.txt")
     os.makedirs(os.path.dirname(sql_file), exist_ok=True)
 

@@ -14,7 +14,7 @@ from typing import Optional
 from openai import OpenAI
 from openai.types.chat import ChatCompletion
 
-from config import cfg, _Config, get_llm_profile
+from config import LLMProfileConfig, cfg, get_llm_profile
 from utils import logger
 
 class LLMGenerator:
@@ -32,7 +32,7 @@ class LLMGenerator:
     def __init__(self, profile: Optional[str] = None) -> None:
         """profile=None → dùng cfg.llm.active_profile. Truyền tên profile khác để
         tạm dùng 1 model local khác (ví dụ LLMGenerator(profile="qwen2.5-14b"))."""
-        profile_cfg: _Config = get_llm_profile(profile_name=profile)
+        profile_cfg: LLMProfileConfig = get_llm_profile(profile_name=profile)
 
         self.profile_name: str = profile or "active"
         self.model_name: str = profile_cfg.model_name

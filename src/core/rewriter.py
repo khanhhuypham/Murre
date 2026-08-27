@@ -17,7 +17,7 @@
 
 from typing import List
 from utils import logger
-from config import get_dataset_path, cfg
+from config import cfg
 from core.llm import LLMGenerator
 
 """
@@ -57,8 +57,8 @@ class QueryRewriter:
         self.use_tabulation: bool = cfg.pipeline.ablation.tabulation
 
         # Đọc file prompts few-shot từ đường dẫn trong config
-        prompt_key: str = "prompt" if self.use_tabulation else "prompt_no_tabulation"
-        prompt_path: str = get_dataset_path(key=prompt_key)
+        ds_paths = cfg.dataset_paths
+        prompt_path: str = ds_paths.prompt if self.use_tabulation else ds_paths.prompt_no_tabulation
         with open(prompt_path, "r", encoding="utf-8") as f:
             # Giữ nguyên format của tác giả: join các dòng lại
             self.prompt_template:str = "\n".join(line.rstrip("\n") for line in f)

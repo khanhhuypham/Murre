@@ -9,6 +9,7 @@ from config import cfg
 from core.encoder import SGPTEncoder
 from core.llm import LLMGenerator
 from core.rewriter import QueryRewriter
+from enums import Method
 from methods.crush import CrushRetriever
 from methods.murre import MURREPipeline
 from methods.single_hop import SingleHopRetriever
@@ -21,22 +22,26 @@ def build_retriever(
     llm: LLMGenerator | None = None,
     crush_collective: bool = True,
 ) -> RetrieverType:
-    """Trả về đúng retriever theo cfg.pipeline.method ("murre" | "single_hop" | "crush").
+    """Trả về đúng retriever theo cfg.pipeline.method (xem enum Method).
 
-    crush_collective: chỉ dùng cho method="crush" — xem CrushRetriever.collective.
+    crush_collective: chỉ dùng cho Method.CRUSH — xem CrushRetriever.collective.
     """
-    method: str = cfg.pipeline.method.lower()
+    try:
+        method: Method = Method(cfg.pipeline.method)
+    except ValueError:
+        raise ValueError(
+            f"pipeline.method={cfg.pipeline.method!r} không hợp lệ. "
+            f"Chỉ nhận: {Method.values()}"
+        ) from None
 
-    if method == "murre":
+    if method is Method.MURRE:
         assert llm is not None, "MURRE cần LLMGenerator cho pha Removal."
         rewriter: QueryRewriter = QueryRewriter(llm=llm)
         return MURREPipeline(encoder=encoder, rewriter=rewriter)
 
-    if method == "single_hop":
+    if method is Method.SINGLE_HOP:
         return SingleHopRetriever(encoder=encoder)
 
-    if method == "crush":
-        assert llm is not None, "CRUSH cần LLMGenerator để hallucinate schema."
-        return CrushRetriever(encoder=encoder, llm=llm, collective=crush_collective)
-
-    raise ValueError(f"pipeline.method='{method}' không hợp lệ. Chỉ nhận: murre | single_hop | crush")
+    assert method is Method.CRUSH, f"Method mới chưa xử lý trong build_retriever: {method}"
+    assert llm is not None, "CRUSH cần LLMGenerator để hallucinate schema."
+    return CrushRetriever(encoder=encoder, llm=llm, collective=crush_collective)

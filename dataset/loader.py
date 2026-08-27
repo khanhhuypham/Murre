@@ -4,7 +4,7 @@
 import os
 import json
 from typing import Any, Dict, List, Optional
-from config import get_dataset_path
+from config import cfg
 from utils import logger
 
 def _load_json(path: str) -> Any:
@@ -25,7 +25,7 @@ def _load_lines(path: str) -> List[str]:
 
 def load_tables() -> List[Dict[str, Any]]:
     """Tải tables.json của dataset đang chọn trong config.general.dataset."""
-    path: str = get_dataset_path(key="tables")
+    path: str = cfg.dataset_paths.tables
     data: List[Dict[str, Any]] = _load_json(path=path)
     logger.info(f"[Loader] Đã tải {len(data)} databases từ: {path}")
     return data
@@ -33,7 +33,7 @@ def load_tables() -> List[Dict[str, Any]]:
 
 def load_dev() -> List[Dict[str, Any]]:
     """Tải dev.json của dataset đang chọn."""
-    path: str = get_dataset_path(key="dev")
+    path: str = cfg.dataset_paths.dev
     data: List[Dict[str, Any]] = _load_json(path=path)
     logger.info(f"[Loader] Đã tải {len(data)} câu hỏi từ: {path}")
     return data
@@ -48,7 +48,7 @@ def _dev_cached() -> List[Dict[str, Any]]:
 
     Cache theo đường dẫn nên đổi general.dataset giữa chừng vẫn ra dữ liệu đúng.
     """
-    path: str = get_dataset_path(key="dev")
+    path: str = cfg.dataset_paths.dev
     if path not in _DEV_CACHE:
         _DEV_CACHE[path] = load_dev()
     return _DEV_CACHE[path]
@@ -80,7 +80,7 @@ def gold_for(question: str) -> List[str]:
 
 def load_gold() -> List[str]:
     """Tải gold.txt của dataset đang chọn."""
-    path: str = get_dataset_path(key="gold")
+    path: str = cfg.dataset_paths.gold
     data: List[str] = _load_lines(path=path)
     logger.info(f"[Loader] Đã tải {len(data)} câu SQL vàng từ: {path}")
     return data
