@@ -173,8 +173,9 @@ class PathsConfig(BaseModel):
     # Đây là TEMPLATE còn nguyên {placeholder}; đường dẫn thật lấy qua cfg.outputs.*()
     # — {dataset}, {scale}, {method}, {max_hop} điền theo general.* / pipeline.*, còn
     # {hop}, {beam}, {k} do chỗ gọi truyền vào.
-    embeddings: str = "outputs/{dataset}/{scale}/embeddings.json"
-    # Cache embeddings lưu dưới dạng .pt để load nhanh hơn JSON
+    # Cache embeddings — MỘT định dạng duy nhất (.pt), dùng chung cho Option 1,
+    # Option 2 và API. Trước đây còn thêm embeddings.json theo format của tác giả:
+    # cùng bộ vector nhưng lưu 2 nơi, encode 2 lần, nên đã bỏ.
     embeddings_cache: str = "outputs/{dataset}_{scale}_embeddings.pt"
     turn0: str = "outputs/{dataset}/{scale}/{method}/turn0/dev.json"
     rewrite_output: str = "outputs/{dataset}/{scale}/{method}/rewrite/outputs/turn{hop}"
@@ -237,10 +238,6 @@ class OutputPaths:
         return template.format(**values)
 
     # --- Một method cho mỗi template trong PathsConfig ------------------------
-    def embeddings(self) -> str:
-        """outputs/{dataset}/{scale}/embeddings.json"""
-        return self._render(self._settings.paths.embeddings)
-
     def embeddings_cache(self) -> str:
         """outputs/{dataset}_{scale}_embeddings.pt"""
         return self._render(self._settings.paths.embeddings_cache)
@@ -302,7 +299,7 @@ class RunOptionConfig(BaseModel):
     """
     # Option 1: "offline" — chạy toàn bộ pipeline trong Python (dùng để debug/học)
     # Option 2: "batch"   — chạy từng bước riêng lẻ qua file steps/*.py (production)
-    mode: str = "offline"  # offline | batch
+    mode: str = "batch"  # offline | batch
 
 
 class Settings(BaseModel):
@@ -424,6 +421,19 @@ def list_llm_profiles() -> List[str]:
     return list(cfg.llm.profiles)
 
 
+def print_llm_profiles() -> None:
+    """In các profile LLM đã khai báo, đánh dấu * vào cái đang dùng.
+
+    Chạy: python -m config --llm
+    """
+    active: str = cfg.llm.active_profile
+    print(f"{'=' * 60}\n  LLM PROFILE trong config.yaml\n{'=' * 60}")
+    for name in list_llm_profiles():
+        mark: str = "*" if name == active else " "
+        print(f"  {mark} {name}")
+    print(f"{'=' * 60}\n  (* = llm.active_profile đang dùng)")
+
+
 def get_llm_profile(profile_name: Optional[str] = None) -> LLMProfileConfig:
     """Cấu hình của 1 profile LLM cụ thể (model_name/base_url/api_key/temperature).
 
@@ -459,7 +469,7 @@ def print_paths() -> None:
     method → đường dẫn thật, kể cả sau khi đổi general.dataset / general.scale /
     pipeline.method.
 
-    Chạy: python src/config.py --paths
+    Chạy: python -m config --paths
     """
     header: str = (
         f"dataset={cfg.general.dataset} scale={cfg.general.scale} "
@@ -500,4 +510,15 @@ cfg: Settings = load_settings()
 
 
 if __name__ == "__main__":
-    print_config()
+    # Mọi lệnh XEM cấu hình đều nằm ở đây, không nằm trong main.py — main.py chỉ để
+    # chạy pipeline.
+    #   python -m config          → toàn bộ cấu hình đang hiệu lực (JSON)
+    #   python -m config --paths  → mọi đường dẫn đã resolve theo cfg hiện tại
+    #   python -m config --llm    → danh sách profile LLM trong config.yaml
+    args: List[str] = sys.argv[1:]
+    if "--paths" in args:
+        print_paths()
+    elif "--llm" in args:
+        print_llm_profiles()
+    else:
+        print_config()

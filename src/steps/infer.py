@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 from config import cfg
 from core.llm import LLMGenerator
 from dataset.loader import load_tables
+from models.records import ResultRecord
 from utils import logger
 from utils.schema import build_db_index, filter_ret_tables_from_db, pack_table
 
@@ -67,7 +68,7 @@ def run_infer(top_k: int) -> None:
 
     result_file: str = cfg.outputs.result()
     with open(result_file, "r", encoding="utf-8") as f:
-        data: List[Dict[str, Any]] = json.load(f)
+        data: List[ResultRecord] = ResultRecord.from_list(items=json.load(f))
 
     tables: List[Dict[str, Any]] = load_tables()
     dbs_dict: Dict[str, Dict[str, Any]] = build_db_index(tables=tables)
@@ -78,14 +79,12 @@ def run_infer(top_k: int) -> None:
     prompts_used: List[str] = []
 
     for d in data:
-        top_schemas: List[str] = [r["schema"] for r in d["retrieved"][:top_k]]
+        top_schemas: List[str] = d.schemas[:top_k]
         table_block: str = _build_table_prompt(schema_strings=top_schemas, dbs_dict=dbs_dict)
 
-        question: str = (
-            d.get("utterance") if isinstance(d.get("utterance"), str)
-            else (d.get("utterance_org") or [""])[0] if isinstance(d.get("utterance_org"), list)
-            else d.get("question", "")
-        )
+        # utterance của record kết quả là câu hỏi gốc; nếu rỗng thì lùi về câu đầu
+        # trong utterance_org (chỉ có ở file do steps/score.py sinh ra).
+        question: str = d.utterance or (d.extra.get("utterance_org") or [""])[0]
 
         prompt: str = _ZERO_SHOT_PROMPT.format(table=table_block, question=question)
         prompts_used.append(prompt)

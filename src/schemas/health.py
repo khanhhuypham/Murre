@@ -16,7 +16,7 @@ class HealthStatus(BaseModel):
     """
 
     status: str = Field(..., description="'ok' nếu service đang chạy")
-    method: Method = Field(..., description="pipeline.method đang cấu hình trong config.yaml")
+    method: Method = Field(..., description="pipeline.method đang cấu hình trong src/config.py")
     datasets_available: List[Dataset] = Field(..., description="Có dataset/{ds}/tables.json trên đĩa")
     datasets_loaded: List[Dataset] = Field(..., description="Đã nạp embeddings vào RAM")
     beam_size: int = Field(..., description="pipeline.beam_size")

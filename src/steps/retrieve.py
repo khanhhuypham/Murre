@@ -6,13 +6,13 @@
 # Ý NGHĨA THAM SỐ:
 #   --hop 0   : Retrieve trên TOÀN BỘ corpus, dùng câu hỏi gốc trong dev.json.
 #               Cần cho MỌI phương pháp (murre/single_hop/crush), không cần --beam.
-#   --hop N   : (chỉ áp dụng khi pipeline.method=murre trong config.yaml)
+#   --hop N   : (chỉ áp dụng khi pipeline.method=murre trong src/config.py)
 #               Retrieve trong pool đã hẹp lại từ hop 0, dùng câu hỏi đã qua
 #               Removal/Splice (output của steps/rewrite.py --hop N-1).
 #               Cần chỉ định --beam tương ứng.
 #
 # ĐIỀU KIỆN CHẠY ĐƯỢC (phải chạy đúng thứ tự các bước trước):
-#   --hop 0            cần: steps/embed.py đã chạy xong (có embeddings.json)
+#   --hop 0            (embeddings tự nạp/encode qua core/corpus.prepare())
 #   --hop N (N>=1)     cần: steps/retrieve.py --hop 0 VÀ
 #                            steps/rewrite.py --hop (N-1) đã chạy xong
 #
@@ -39,7 +39,10 @@ from typing import Any, Dict, List, Tuple, Optional
 import torch
 from scipy.spatial.distance import cosine
 from config import cfg
+from core.corpus import prepare
 from core.encoder import SGPTEncoder
+from models.records import RewriteRecord, TurnRecord
+from models.retrieval import RetrievedRow
 from utils import logger
 from utils.metrics import compute_recall
 
@@ -52,7 +55,6 @@ def _cosine_sim(q: torch.Tensor, d: torch.Tensor) -> float:
 def retrieve_for_queries(
     query_embeddings_grouped: List[List[torch.Tensor]],
     pool_embs: List[torch.Tensor],
-    pool_docs: List[str],
     top_k_max: int,
 ) -> List[List[Tuple[int, float]]]:
     """
@@ -107,17 +109,15 @@ def run_retrieve(
 
     logger.info(f"\n{'=' * 60}\n  BƯỚC 2: RETRIEVAL — Hop {hop}" + (f" | Beam {beam}" if beam is not None else "") + f"\n{'=' * 60}")
 
-    # ── Tải embeddings corpus ──────────────────────────────────────────────
-    emb_path: str = cfg.outputs.embeddings()
-    logger.info(f"[Retrieve] Tải embeddings từ: {emb_path}")
-    with open(emb_path, "r", encoding="utf-8") as f:
-        original_docs: List[Dict[str, Any]] = json.load(f)
-
-    all_docs: List[str] = [x["pred_schema"] for x in original_docs]
-    all_doc_embs: List[torch.Tensor] = [
-        torch.tensor(x["embedding"]) for x in original_docs
-    ]
-    schema_map: Dict[str, int] = {d["pred_schema"]: i for i, d in enumerate(original_docs)}
+    # ── Tải corpus + embeddings ────────────────────────────────────────────
+    # Dùng chung prepare() với Option 1 và API: cùng một cache .pt
+    # (paths.embeddings_cache), chưa có thì tự encode rồi lưu lại.
+    encoder: SGPTEncoder
+    all_docs: List[str]
+    all_doc_embs: torch.Tensor
+    encoder, all_docs, all_doc_embs = prepare()
+    schema_map: Dict[str, int] = {schema: i for i, schema in enumerate(all_docs)}
+    logger.info(f"[Retrieve] Corpus {len(all_docs)} schema, embeddings {tuple(all_doc_embs.shape)}")
 
     # ── Tải câu hỏi ───────────────────────────────────────────────────────
     if queries_file is None:
@@ -126,29 +126,26 @@ def run_retrieve(
         else:
             queries_file = cfg.outputs.rewrite_output(hop=hop - 1) + f"/dev.{beam}.json"
 
+    # Hop 0 đọc dataset/{ds}/dev.json, hop N đọc rewrite/outputs/turn{N-1}/dev.{B}.json.
+    # Cùng đọc bằng RewriteRecord được: dev.json chỉ là tập con (không có
+    # utterance_org/selected_database), hai trường đó mặc định rỗng.
     logger.info(f"[Retrieve] Tải câu hỏi từ: {queries_file}")
     with open(queries_file, "r", encoding="utf-8") as f:
-        data: List[Dict[str, Any]] = json.load(f)
+        data: List[RewriteRecord] = RewriteRecord.from_list(items=json.load(f))
 
     # ── Xác định pool tìm kiếm ────────────────────────────────────────────
-    last_retrieved_data: List[Dict[str, Any]] = []
+    last_retrieved_data: List[TurnRecord] = []
     if last_retrieved_file is None and hop > 0:
         last_retrieved_file = cfg.outputs.turn0()
 
     if last_retrieved_file:
         logger.info(f"[Retrieve] Hop {hop}: hẹp pool từ {last_retrieved_file}")
         with open(last_retrieved_file, "r", encoding="utf-8") as f:
-            last_retrieved_data = json.load(f)
+            last_retrieved_data = TurnRecord.from_list(items=json.load(f))
 
     # ── Mã hóa câu hỏi ────────────────────────────────────────────────────
-    encoder: SGPTEncoder = SGPTEncoder()
-
     # Tách câu hỏi thành nhiều sub-query nếu có nhiều dòng (từ bước rewrite)
-    queries: List[List[str]] = [
-        d["utterance"].split("\n") if isinstance(d.get("utterance"), str)
-        else [d.get("utterance", "")]
-        for d in data
-    ]
+    queries: List[List[str]] = [d.utterance.split("\n") for d in data]
 
     # Mã hóa phẳng rồi nhóm lại
     indexed_subqueries: List[Tuple[int, str]] = [
@@ -163,14 +160,14 @@ def run_retrieve(
 
     # ── Retrieve ───────────────────────────────────────────────────────────
     total_recall: Dict[int, float] = {k: 0.0 for k in top_k_list}
-    output_data: List[Dict[str, Any]] = []
+    output_data: List[TurnRecord] = []
 
     for qi, d in enumerate(data):
         # Xác định pool document cho query này
-        pool_embs: List[torch.Tensor]
+        pool_embs: Any
         pool_docs: List[str]
         if last_retrieved_data:
-            prev_schemas: List[str] = [r["schema"] for r in last_retrieved_data[qi]["retrieved"]]
+            prev_schemas: List[str] = [r.schema for r in last_retrieved_data[qi].retrieved]
             pool_embs = [all_doc_embs[schema_map[s]] for s in prev_schemas if s in schema_map]
             pool_docs = [all_docs[schema_map[s]] for s in prev_schemas if s in schema_map]
         else:
@@ -181,37 +178,32 @@ def run_retrieve(
         ranked: List[Tuple[int, float]] = retrieve_for_queries(
             query_embeddings_grouped=[query_embs_grouped[qi]],
             pool_embs=pool_embs,
-            pool_docs=pool_docs,
             top_k_max=top_k_max,
         )[0]
 
-        retrieved_docs: List[Dict[str, Any]] = [
-            {"rank": rank, "schema": pool_docs[idx], "similarity": sim}
+        retrieved_docs: List[RetrievedRow] = [
+            RetrievedRow(rank=rank, schema=pool_docs[idx], similarity=sim)
             for rank, (idx, sim) in enumerate(ranked)
         ]
         pred_schemas: List[str] = [pool_docs[idx] for idx, _ in ranked]
 
         # Tính recall
-        gold: List[str] = d.get("rel_schema", [])
+        gold: List[str] = d.rel_schema
         recall_per_k: Dict[int, float] = {}
         for k in top_k_list:
             r: float = compute_recall(pred_list=pred_schemas[:k], gold_list=gold) if gold else 0.0
             total_recall[k] += r
             recall_per_k[k] = r
 
-        utterance_org = d.get("utterance_org", [])
-        if isinstance(utterance_org, str):
-            utterance_org = [utterance_org]
-
-        output_data.append({
-            "utterance":     d.get("utterance", ""),
-            "input":         queries[qi],
-            "utterance_org": utterance_org,
-            "selected_database": d.get("selected_database", []),
-            "retrieved":     retrieved_docs,
-            "gold":          gold,
-            "recall":        recall_per_k,
-        })
+        output_data.append(TurnRecord(
+            utterance=d.utterance,
+            input=queries[qi],
+            utterance_org=d.utterance_org,
+            selected_database=d.selected_database,
+            retrieved=retrieved_docs,
+            gold=gold,
+            recall=recall_per_k,
+        ))
 
     # ── In kết quả recall ─────────────────────────────────────────────────
     n: int = len(data)
@@ -228,7 +220,7 @@ def run_retrieve(
 
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(output_data, f, ensure_ascii=False, indent=2)
+        json.dump([r.to_dict() for r in output_data], f, ensure_ascii=False, indent=2)
 
     logger.info(f"[Retrieve] Đã lưu → {output_file}")
     logger.info("=" * 60)

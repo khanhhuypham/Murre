@@ -7,7 +7,9 @@
 #   - compute_res()     : tính tổng hợp cả hai metric cho toàn bộ dataset
 # =============================================================================
 
-from typing import Any, Dict, List
+from typing import Dict, List
+
+from models.records import ResultRecord
 
 
 def compute_recall(pred_list: List[str], gold_list: List[str]) -> float:
@@ -67,16 +69,15 @@ def compute_complete_recall_at_k(
 
 def compute_res(
     top_k: List[int],
-    data: List[Dict[str, Any]],
+    data: List[ResultRecord],
 ) -> Dict[str, Dict[int, float]]:
     """
     Tính trung bình recall@K và complete recall=K trên toàn bộ dataset.
 
     Tham số:
         top_k : danh sách các giá trị K (ví dụ: [3, 5, 10, 20])
-        data  : danh sách dict, mỗi dict có:
-                  "retrieved" : list of {"schema": str, ...}
-                  "gold"      : list of str (schema đúng)
+        data  : các record của file result/turn{H}/dev.json — xem models/records.py.
+                Đọc từ file thì dùng ResultRecord.from_list(json.load(f)).
 
     Trả về:
         {
@@ -88,8 +89,8 @@ def compute_res(
     complete_sum: Dict[int, float] = {k: 0.0 for k in top_k}
 
     for d in data:
-        pred: List[str] = [x["schema"] for x in d["retrieved"]]
-        gold: List[str]  = d.get("gold", [])
+        pred: List[str] = d.schemas
+        gold: List[str] = d.gold
 
         rec: Dict[int, float] = compute_recall_at_k(top_k, pred, gold)
         com: Dict[int, float] = compute_complete_recall_at_k(top_k, pred, gold)

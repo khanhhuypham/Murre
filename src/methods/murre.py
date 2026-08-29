@@ -23,14 +23,13 @@
 #        (bị bỏ qua nếu ablation.early_stop=false, hoặc không tồn tại ở nhánh Splice)
 #   Scoring: Score_Path = Π P̂(t|q) cho mỗi hop; Score_Table = max(Score_Path)
 #
-# Hỗ trợ 3 cờ ablation trong config.yaml (pipeline.ablation, Table 4 của paper §4.3):
+# Hỗ trợ 3 cờ ablation trong src/config.py (pipeline.ablation, Table 4 của paper §4.3):
 #   removal    False → "w/o removal": dùng _next_query_with_splice thay vì LLM Removal
 #   tabulation False → xử lý bên trong QueryRewriter (chọn prompt tương ứng)
 #   early_stop False → không bao giờ dừng sớm, luôn chạy hết max_hop
 #
-# CÁCH CHẠY (Option 1 — Offline/Debug, chỉ cần config.yaml → run_option.mode: offline):
-#   python -m main --question "Which airlines have a flight to AHD?" --verbose
-#   python -m main                          # dùng câu hỏi mẫu đầu tiên trong dev.json
+# CÁCH CHẠY (Option 1 — Offline/Debug, cần src/config.py → run_option.mode = "offline"):
+#   python -m main            # đặt QUESTION/VERBOSE trong khối __main__ của main.py
 #
 # CHẠY/TEST ĐỘC LẬP (xem khối __main__ ở cuối file):
 #   python -m methods.murre
@@ -38,8 +37,8 @@
 #   python -m methods.murre --beam_size 2 --max_hop 1      # chạy nhanh khi debug
 # =============================================================================
 
-import math
-from typing import Any, Dict, List, TypedDict, Tuple
+from dataclasses import dataclass, replace
+from typing import Dict, List, NamedTuple, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -47,35 +46,68 @@ import torch.nn.functional as F
 from config import cfg
 from core.encoder import SGPTEncoder
 from core.rewriter import QueryRewriter
+from models.retrieval import RetrievedTable
 from utils import logger
+from utils.scoring import path_score
 
-class RetrievalHit(TypedDict):
+class RetrievalHit(NamedTuple):
+    """Một bảng trả về từ _retrieve_top_k — truy cập bằng dấu chấm: hit.global_idx.
+
+    CỐ Ý để ở đây chứ không đưa vào models/: kiểu này chỉ phục vụ vòng lặp beam search
+    bên trong file này, và `global_idx` là chi tiết riêng của cơ chế hẹp pool của MURRE
+    (xem run()). Kiểu dùng chung giữa các module là RetrievedTable trong
+    models/retrieval.py — đó mới là thứ run() trả ra ngoài.
+
+    Dùng NamedTuple (không phải TypedDict) vì đây là giá trị CHỈ ĐỌC, tạo một lần
+    rồi thôi: đọc bằng `hit.schema` nên IDE bắt được lỗi gõ sai tên field ngay lúc
+    viết, thay vì `hit["schema"]` chỉ báo KeyError lúc chạy. Tuple cũng nhẹ hơn dict
+    — mỗi lần chạy sinh ra top_k_pool × beam_size × max_hop object loại này.
+
+    BeamState bên dưới cũng đọc bằng dấu chấm, nhưng là dataclass vì nó có thêm
+    property score.
+    """
+
+    # Chuỗi schema "db_id.table(col1, col2, ...)" — chính là corpus[global_idx]
     schema: str
+    # Cosine similarity với câu truy vấn, trong khoảng [-1, 1]
     similarity: float
+    # Vị trí trong corpus GỐC (không phải vị trí trong pool đang search) — nhờ nó
+    # mà hop 0 truyền được pool của mình xuống các hop sau, xem run().
     global_idx: int
 
-class BeamState(TypedDict, total=False):
+@dataclass(frozen=True)
+class BeamState:
+    """Một "đường đi" (path) qua các bảng trong beam search — xem run().
+
+    frozen=True: mỗi lần beam thay đổi thì tạo object MỚI (dùng replace()), không
+    sửa tại chỗ. Nhờ vậy beam đã đưa vào `stopped` không thể bị sửa ngầm ở vòng lặp
+    sau, và gõ sai tên field thì báo lỗi ngay thay vì âm thầm tạo field mới.
+
+    KHÔNG dùng slots=True: trên Python 3.11, frozen+slots gộp lại làm việc gán một
+    field gõ sai báo "TypeError: super(type, obj)..." rất khó hiểu thay vì
+    FrozenInstanceError. Chỗ này chỉ tiết kiệm được vài chục KB nên không đáng đánh
+    đổi.
+    """
+
+    # Danh sách schema đã đi qua trên nhánh này, theo đúng thứ tự hop
     path_schemas: List[str]
+    # Similarity (CHƯA Norm) tương ứng từng schema trong path_schemas
     path_sims: List[float]
+    # Câu truy vấn hiện tại của nhánh này (sau Removal/Splice)
     current_query: str
-    early_stopped: bool
+    # True nếu nhánh đã dừng sớm (chỉ xảy ra ở nhánh Removal)
+    early_stopped: bool = False
 
-def _normalize(x: float) -> float:
-    """
-    Chuẩn hóa cosine similarity từ [-1,1] về [0,1].
-    Công thức từ Appendix C bài báo: Norm(s) = (s + 1) / 2
-    """
-    return (x + 1) / 2
+    @property
+    def score(self) -> float:
+        """Score_Path của nhánh này (§3.5) — suy ra từ path_sims, không lưu riêng.
 
+        Trước đây score được nhét vào beam dưới dạng key tạm "_score" rồi pop ra sau
+        khi sort. Vì nó chỉ là hàm thuần của path_sims nên tính lại ở đây vừa rẻ vừa
+        không bao giờ lệch với path_sims.
+        """
+        return path_score(similarities=self.path_sims)
 
-
-def _path_score(similarities: List[float]) -> float:
-    """
-    Tính Score_Path = Π P̂(t|q) trên tất cả các hop của một beam path.
-    Trong code dùng log để tránh underflow (tích xác suất nhỏ → về 0).
-    Score_Path = Σ log(Norm(sim_k)) cho k = 1..H
-    """
-    return sum(math.log(max(_normalize(x=s), 1e-9)) for s in similarities)
 
 class MURREPipeline:
     """
@@ -113,7 +145,7 @@ class MURREPipeline:
     ) -> List[RetrievalHit]:
         """
         Mã hóa câu truy vấn rồi tính cosine similarity với corpus.
-        Trả về top_k kết quả dạng {"schema", "similarity", "global_idx"}.
+        Trả về top_k RetrievalHit — đọc bằng hit.schema / hit.similarity / hit.global_idx.
 
         pool_indices: nếu không None → chỉ search trong tập con này (Hop 1+)
         """
@@ -127,6 +159,7 @@ class MURREPipeline:
         if pool_indices is not None:
             pool_embs = schema_embeddings[pool_indices]
             actual_pool = pool_indices
+
         else:
             pool_embs = schema_embeddings
             actual_pool = list(range(len(corpus)))
@@ -177,7 +210,7 @@ class MURREPipeline:
             corpus: List[str],
             schema_embeddings: torch.Tensor,
             verbose: bool = False,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[RetrievedTable]:
         """
         Chạy toàn bộ thuật toán MURRE multi-hop beam search.
 
@@ -208,23 +241,19 @@ class MURREPipeline:
         )
 
         # Lưu lại pool indices của hop 0 để các hop sau search trong đây
-        hop0_pool_indices: List[int] = [r["global_idx"] for r in hop0_results]
+        hop0_pool_indices: List[int] = [r.global_idx for r in hop0_results]
 
         if verbose:
             logger.info("  Top-3 kết quả hop 0:")
             for r in hop0_results[:3]:
-                logger.info(f"    {r['similarity']:.4f} | {r['schema']}")
+                logger.info(f"    {r.similarity:.4f} | {r.schema}")
 
         # ── KHỞI TẠO BEAMS từ top-B kết quả hop 0 ────────────────────────────
-        # Mỗi beam là một "đường đi" (path) qua các bảng, gồm:
-        #   path_schemas  : danh sách schema đã đi qua trên nhánh này
-        #   path_sims     : danh sách similarity (chưa Norm) tương ứng
-        #   current_query : câu truy vấn hiện tại (sau Removal/Splice)
-        #   early_stopped : True nếu đã dừng sớm (chỉ có thể xảy ra ở nhánh Removal)
+        # Mỗi beam là một "đường đi" (path) qua các bảng — xem class BeamState.
         beams: List[BeamState] = [
             BeamState(
-                path_schemas=[r["schema"]],
-                path_sims=[r["similarity"]],
+                path_schemas=[r.schema],
+                path_sims=[r.similarity],
                 current_query=question,
                 early_stopped=False,
             )
@@ -233,8 +262,8 @@ class MURREPipeline:
 
         # ── HOP 1..max_hop ────────────────────────────────────────────────────
         for hop in range(1, self.max_hop + 1):
-            active: List[BeamState] = [b for b in beams if not b["early_stopped"]]
-            stopped: List[BeamState] = [b for b in beams if b["early_stopped"]]
+            active: List[BeamState] = [b for b in beams if not b.early_stopped]
+            stopped: List[BeamState] = [b for b in beams if b.early_stopped]
 
             if verbose:
                 logger.info(f"\n{'=' * 60}\n[HOP {hop}] Active beams: {len(active)} | Stopped: {len(stopped)}")
@@ -247,20 +276,20 @@ class MURREPipeline:
 
             for beam_idx, beam in enumerate(active):
                 # ── BƯỚC REMOVAL/SPLICE: dự đoán bảng còn thiếu → câu truy vấn mới ──
-                # Chọn đúng cơ chế theo cờ ablation.removal trong config.yaml.
+                # Chọn đúng cơ chế theo cờ ablation.removal trong src/config.py.
                 if self.use_removal:
                     next_query, is_stopped = self._next_query_with_removal(
                         question=question,  # Luôn dùng câu hỏi gốc (theo Appendix K)
-                        path_schemas=beam["path_schemas"],
+                        path_schemas=beam.path_schemas,
                     )
                 else:
                     next_query, is_stopped = self._next_query_with_splice(
                         question=question,
-                        path_schemas=beam["path_schemas"],
+                        path_schemas=beam.path_schemas,
                     )
 
                 if verbose:
-                    logger.info(f"\n  [Beam {beam_idx}] Path: {beam['path_schemas']}")
+                    logger.info(f"\n  [Beam {beam_idx}] Path: {beam.path_schemas}")
                     logger.info(f"  [Beam {beam_idx}] Next query: {next_query!r}")
 
                 # Kiểm tra Early Stop (is_stopped đã tự tính theo self.use_early_stop
@@ -268,7 +297,7 @@ class MURREPipeline:
                 if is_stopped:
                     if verbose:
                         logger.info(f"  [Beam {beam_idx}] → EARLY STOP")
-                    stopped.append({**beam, "early_stopped": True})
+                    stopped.append(replace(beam, early_stopped=True))
                     continue
 
                 # ── BƯỚC RETRIEVAL: Retrieve trong pool hop-0 ─────────────────
@@ -283,20 +312,15 @@ class MURREPipeline:
                 # Mở rộng beam: thêm từng bảng mới vào đường đi
                 for r in new_results:
                     # Bỏ qua bảng đã có trong đường đi này (tránh lặp)
-                    if r["schema"] in beam["path_schemas"]:
+                    if r.schema in beam.path_schemas:
                         continue
-
-                    # Tính score của đường đi mới
-                    new_sims: List[float] = beam["path_sims"] + [r["similarity"]]
-                    new_score: float = _path_score(similarities=new_sims)
 
                     candidates.append(
                         BeamState(
-                            path_schemas=beam["path_schemas"] + [r["schema"]],
-                            path_sims=new_sims,
+                            path_schemas=beam.path_schemas + [r.schema],
+                            path_sims=beam.path_sims + [r.similarity],
                             current_query=next_query,
                             early_stopped=False,
-                            **{"_score": new_score},  # type: ignore[typeddict-item]
                         )
                     )
 
@@ -305,12 +329,8 @@ class MURREPipeline:
                 break
 
             # ── BEAM PRUNING: Giữ top-B đường đi tốt nhất ────────────────────
-            candidates.sort(key=lambda c: c["_score"], reverse=True)  # type: ignore[typeddict-item]
+            candidates.sort(key=lambda c: c.score, reverse=True)
             selected: List[BeamState] = candidates[: self.beam_size]
-
-            # Xóa key tạm "_score" trước khi lưu
-            for b in selected:
-                b.pop("_score", None)  # type: ignore[typeddict-item]
 
             # Gộp beam active mới với beam đã dừng sớm
             beams = selected + stopped
@@ -321,8 +341,8 @@ class MURREPipeline:
         table_score: Dict[str, float] = {}
 
         for beam in beams:
-            path_s: float = _path_score(similarities=beam["path_sims"])
-            for schema in beam["path_schemas"]:
+            path_s: float = beam.score
+            for schema in beam.path_schemas:
                 # Lấy giá trị lớn nhất (max-pooling qua các đường đi)
                 table_score[schema] = max(
                     path_s,
@@ -338,7 +358,7 @@ class MURREPipeline:
             for i, (schema, score) in enumerate(ranked[:5]):
                 logger.info(f"  {i + 1}. {schema}  (score={score:.4f})")
 
-        return [{"schema": s, "score": sc} for s, sc in ranked]
+        return [RetrievedTable(schema=s, score=sc) for s, sc in ranked]
 
 
 # =============================================================================
@@ -348,23 +368,21 @@ if __name__ == "__main__":
     from core.corpus import prepare
     from core.llm import LLMGenerator
     from dataset.loader import load_dev, resolve_question
-    from methods._cli import print_results
+    from utils.display import print_results
 
     # --- Chỉnh trực tiếp mấy biến này để test ------------------------------
-    DATASET: str | None = None       # None → dùng general.dataset của config.yaml
+    DATASET: str | None = None       # None → dùng general.dataset của src/config.py
     if DATASET:
         # Phải set TRƯỚC load_dev(), nếu không sẽ đọc dev.json của dataset cũ.
         cfg.general.dataset = DATASET
 
     # Lấy câu số 21 của dev.json (câu cần 3 bảng — đúng ca multi-hop mà MURRE nhắm tới).
-    # Đổi số trong [] để test câu khác; đặt None để lấy câu đầu tiên; hoặc gõ thẳng
-    # một chuỗi tự viết (khi đó không tra được gold nên sẽ không có ✓ và recall).
     QUESTION: str | None = load_dev()[21]["utterance"]
-    TOP_N: int = 5                   # số bảng in ra
+    TOP_N: int = 5
     LLM_PROFILE: str | None = None   # None → dùng llm.active_profile
     VERBOSE: bool = False            # True: in chi tiết từng hop (Removal, retrieve, early stop)
-    BEAM_SIZE: int | None = None     # None → theo pipeline.beam_size; để 2 cho nhanh khi debug
-    MAX_HOP: int | None = None       # None → theo pipeline.max_hop; để 1 cho nhanh khi debug
+    BEAM_SIZE: int | None = None
+    MAX_HOP: int | None = None
     # ----------------------------------------------------------------------
 
     # Ghi đè config TRƯỚC khi khởi tạo pipeline, vì MURREPipeline.__init__ đọc
@@ -389,6 +407,9 @@ if __name__ == "__main__":
         rewriter=QueryRewriter(llm=LLMGenerator(profile=LLM_PROFILE)),
     )
     results = pipeline.run(
-        question=question, corpus=corpus, schema_embeddings=embs, verbose=VERBOSE,
+        question=question,
+        corpus=corpus,
+        schema_embeddings=embs,
+        verbose=VERBOSE,
     )
     print_results(method="MURRE", question=question, results=results, top_n=TOP_N)

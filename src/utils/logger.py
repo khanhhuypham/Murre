@@ -20,24 +20,18 @@ from config import cfg
 
 _DEFAULT_LEVEL = logging.INFO
 
-# def _get_logging_config_section() -> Optional[object]:
-#     """Lấy section `logging` trong config.yaml (nếu có), tránh lỗi nếu config
-#     chưa load được hoặc chưa khai báo section này (giữ tương thích ngược)."""
-#     try:
-#         return getattr(cfg, "logging", None)
-#     except Exception:
-#         # Không để lỗi đọc config làm hỏng cả logger — quay về mặc định an toàn.
-#         return None
-
 def _resolve_level() -> int:
-    """Đọc mức log từ config.yaml (logging.level). Không có → mặc định INFO."""
+    """Đọc mức log từ cfg.logging.level (LoggingConfig trong src/config.py).
+
+    Vẫn dùng getattr() có mặc định để logger không chết nếu section bị đổi tên.
+    """
     section: Optional[Any] = getattr(cfg, "logging", None)
     cfg_level: str = str(getattr(section, "level", "INFO")).upper().strip()
     return getattr(logging, cfg_level, _DEFAULT_LEVEL)
 
 def _resolve_log_file_path() -> Optional[str]:
-    """Trả về đường dẫn file log nếu config.yaml đặt logging.log_to_file: true,
-    None nếu chỉ in ra console (mặc định)."""
+    """Trả về đường dẫn file log nếu LoggingConfig.log_to_file = True (src/config.py),
+    None nếu chỉ in ra console."""
     section: Optional[Any] = getattr(cfg, "logging", None)
 
     if not bool(getattr(section, "log_to_file", False)):

@@ -10,26 +10,18 @@
 # =============================================================================
 
 import json
-import math
 import os
 from copy import deepcopy
-from typing import Any, Dict, List, Tuple
+from typing import List, Tuple
 from config import cfg
 from core.llm import LLMGenerator
 from core.rewriter import QueryRewriter
+from models.records import BeamStep, RewriteRecord, TurnRecord
+from steps._common import find_json_files
 from utils import logger
+from utils.scoring import path_score
 
-def _find_json_files(directory: str) -> List[str]:
-    """Tìm tất cả file JSON trong một thư mục, sắp xếp theo tên."""
-    files: List[str] = []
-    for root, _, fnames in os.walk(directory):
-        for fname in fnames:
-            if fname.endswith(".json"):
-                files.append(os.path.join(root, fname))
-    return sorted(files)
-
-
-def _sample_beams(retrieved_dir: str, top_k: int) -> List[List[Dict[str, Any]]]:
+def _sample_beams(retrieved_dir: str, top_k: int) -> List[List[RewriteRecord]]:
     """
     Lấy mẫu top-K beam path từ các file retrieved.
     Tương đương với rewrite/sample.py của tác giả.
@@ -43,12 +35,28 @@ def _sample_beams(retrieved_dir: str, top_k: int) -> List[List[Dict[str, Any]]]:
     """
     logger.info(f"[SampleBeams] Đang tải file JSON từ: {retrieved_dir}")
 
-    # Tải tất cả file retrieved trong thư mục
-    all_files_data: List[List[Dict[str, Any]]] = []
-    for fpath in _find_json_files(directory=retrieved_dir):
+    # Tải tất cả file retrieved trong thư mục.
+    # Bước này BẮT BUỘC cần trường `retrieved` — thứ chỉ steps/retrieve.py sinh ra
+    # (xem TurnRecord trong models/records.py).
+    all_files_data: List[List[TurnRecord]] = []
+    for fpath in find_json_files(directory=retrieved_dir):
         logger.debug(f"[SampleBeams] Đang đọc file: {fpath}")
         with open(fpath, "r", encoding="utf-8") as f:
-            all_files_data.append(json.load(f))
+            records: List[TurnRecord] = TurnRecord.from_list(items=json.load(f))
+
+        # Sai thư mục đầu vào là lỗi hay gặp nhất của bước này: thư mục
+        # rewrite/outputs/turn{N}/ chỉ chứa câu hỏi đã viết lại, KHÔNG có `retrieved`.
+        # Bắt ngay tại đây, vì nếu để lọt thì beam sampling chạy trên danh sách ứng
+        # viên rỗng và cho ra số liệu sai mà không báo gì.
+        if records and not any(r.retrieved for r in records):
+            raise ValueError(
+                f"File {fpath} không có bảng nào trong trường 'retrieved'.\n"
+                f"  Nhiều khả năng đây là file của steps/rewrite.py (câu hỏi đã viết "
+                f"lại) chứ không phải của steps/retrieve.py.\n"
+                f"  Đầu vào đúng của rewrite --hop N là thư mục turn{{N}}/ — xem "
+                f"HUONG_DAN.md mục 5b."
+            )
+        all_files_data.append(records)
 
     if not all_files_data:
         raise FileNotFoundError(f"Không tìm thấy file JSON trong: {retrieved_dir}")
@@ -57,7 +65,7 @@ def _sample_beams(retrieved_dir: str, top_k: int) -> List[List[Dict[str, Any]]]:
                 f"{len(all_files_data[0])} sample/file. Đang lấy top-{top_k} beam ...")
 
     # Kết quả: top_k slots, mỗi slot chứa danh sách sample
-    results: List[List[Dict[str, Any]]] = [[] for _ in range(top_k)]
+    results: List[List[RewriteRecord]] = [[] for _ in range(top_k)]
 
     num_samples: int = len(all_files_data[0])
     for i in range(num_samples):
@@ -65,43 +73,47 @@ def _sample_beams(retrieved_dir: str, top_k: int) -> List[List[Dict[str, Any]]]:
 
         # Tập hợp tất cả (utterance, selected_database, sims, utterance_org)
         # của sample thứ i qua tất cả file
-        candidates: List[Tuple[str, List[str], List[float], Any]] = []
+        candidates: List[Tuple[str, List[str], List[float], List[str]]] = []
 
         for file_idx, file_data in enumerate(all_files_data):
-            sample = file_data[i]
-
-            if "selected_database" not in sample:
-                sample["selected_database"] = []
+            sample: TurnRecord = file_data[i]
 
             logger.debug(
-                f"[SampleBeams] File {file_idx}: utterance={sample.get('utterance', '')!r}, "
-                f"đã có {len(sample['selected_database'])} bảng trong đường đi, "
-                f"xét {min(3 * top_k, len(sample['retrieved']))} bảng ứng viên mới"
+                f"[SampleBeams] File {file_idx}: utterance={sample.utterance!r}, "
+                f"đã có {len(sample.selected_database)} bảng trong đường đi, "
+                f"xét {min(3 * top_k, len(sample.retrieved))} bảng ứng viên mới"
             )
 
+            path_schemas: List[str] = [t[0] for t in sample.selected_database]
+            path_sims: List[float] = [t[1] for t in sample.selected_database]
+
             # Xét top 3*top_k bảng đã retrieve để tạo beam path mới
-            for x in sample["retrieved"][:3 * top_k]:
+            for x in sample.retrieved[:3 * top_k]:
                 # Bỏ qua bảng đã có trong đường đi hiện tại
-                if x["schema"] in [t[0] for t in sample["selected_database"]]:
-                    logger.debug(f"[SampleBeams] Bỏ qua (đã có trong path): {x['schema']}")
+                if x.schema in path_schemas:
+                    logger.debug(f"[SampleBeams] Bỏ qua (đã có trong path): {x.schema}")
                     continue
 
-                utterance: str = sample.get("utterance") or sample.get("question", "")
-                assert utterance, f"Câu hỏi rỗng tại sample {i}"
+                assert sample.utterance, f"Câu hỏi rỗng tại sample {i}"
 
-                logger.debug(f"[SampleBeams] Ứng viên mới: {x['schema']} (similarity={x['similarity']:.4f})")
+                logger.debug(f"[SampleBeams] Ứng viên mới: {x.schema} (similarity={x.similarity:.4f})")
 
                 candidates.append((
-                    utterance,
-                    [t[0] for t in sample["selected_database"]] + [x["schema"]],
-                    [t[1] for t in sample["selected_database"]] + [x["similarity"]],
-                    sample.get("utterance_org"),
+                    sample.utterance,
+                    path_schemas + [x.schema],
+                    path_sims + [x.similarity],
+                    sample.utterance_org,
                 ))
 
-        # Sắp xếp theo log-sum path score và lấy top_k
+        # Sắp xếp theo Score_Path rồi lấy top_k.
+        # Trước đây chỗ này tự tính sum(log(max(s, 1e-9))) — tức là BỎ QUA bước
+        # Norm(s) = (s+1)/2 của Appendix C, khác với methods/murre.py và
+        # steps/score.py. Hệ quả: mọi similarity <= 0 đều bị ép về log(1e-9) nên mất
+        # hết thứ tự giữa chúng, và tập beam chọn ra lệch với hai chỗ kia. Nay dùng
+        # chung path_score() trong utils/scoring.py để cả pipeline cùng một công thức.
         candidates = sorted(
             candidates,
-            key=lambda x: sum(math.log(max(s, 1e-9)) for s in x[2]),
+            key=lambda x: path_score(similarities=x[2]),
             reverse=True,
         )[:top_k]
 
@@ -117,12 +129,12 @@ def _sample_beams(retrieved_dir: str, top_k: int) -> List[List[Dict[str, Any]]]:
         for j, (utterance, schemas, sims, utterance_org) in enumerate(candidates):
             logger.debug(f"[SampleBeams] Beam slot {j}: path={schemas}")
 
-            results[j].append({
-                "utterance":         utterance,
-                "utterance_org":     utterance_org,
-                "selected_database": list(zip(schemas, sims)),
-                "rel_schema":        all_files_data[0][i].get("gold", []),
-            })
+            results[j].append(RewriteRecord(
+                utterance=utterance,
+                utterance_org=utterance_org,
+                selected_database=list(zip(schemas, sims)),
+                rel_schema=all_files_data[0][i].gold,
+            ))
 
         if (i + 1) % 100 == 0 or (i + 1) == num_samples:
             logger.info(f"[SampleBeams] Đã xử lý {i + 1}/{num_samples} sample ...")
@@ -165,7 +177,7 @@ def run_rewrite(hop: int) -> None:
         retrieved_dir = os.path.dirname(cfg.outputs.turn_n(hop=hop, beam=0))
 
     logger.info(f"[Rewrite] Lấy mẫu beams từ: {retrieved_dir}")
-    beam_samples: List[List[Dict[str, Any]]] = _sample_beams(retrieved_dir=retrieved_dir, top_k=beam_size)
+    beam_samples: List[List[RewriteRecord]] = _sample_beams(retrieved_dir=retrieved_dir, top_k=beam_size)
 
     # ── Giai đoạn 2: Gọi LLM cho từng beam ───────────────────────────────
     rewriter: QueryRewriter | None = None
@@ -181,34 +193,29 @@ def run_rewrite(hop: int) -> None:
 
         for sample_idx, d in enumerate(beam_data):
             # Lấy danh sách schema trong đường đi beam hiện tại
-            sel_dbs: List[Tuple[str, float]] = d.get("selected_database", [])
-            schemas: List[str] = [s[0] for s in sel_dbs] if sel_dbs else []
+            sel_dbs: List[BeamStep] = d.selected_database
+            schemas: List[str] = [s[0] for s in sel_dbs]
 
             logger.info(
                 f"[Rewrite] Beam {beam_idx} | Sample {sample_idx}: "
-                f"utterance gốc={d['utterance']!r}, path_schemas={schemas}"
+                f"utterance gốc={d.utterance!r}, path_schemas={schemas}"
             )
 
             # Gọi LLM
             rewritten: str
             if use_removal and rewriter is not None:
-                result: str = rewriter.rewrite(question=d["utterance"], retrieved_schemas=schemas)
+                result: str = rewriter.rewrite(question=d.utterance, retrieved_schemas=schemas)
                 rewritten = result.strip()
                 logger.info(f"[Rewrite] Beam {beam_idx} | Sample {sample_idx}: LLM trả về={rewritten!r}")
             else:
-                rewritten = _splice(question=d["utterance"], schemas=schemas)
+                rewritten = _splice(question=d.utterance, schemas=schemas)
                 logger.info(f"[Rewrite] Beam {beam_idx} | Sample {sample_idx}: đã splice={rewritten!r}")
 
-            # Cập nhật lịch sử utterance (theo tác giả)
-            utterance_before: str = deepcopy(x=d["utterance"])
-            if d.get("utterance_org") and isinstance(d["utterance_org"], list):
-                d["utterance_org"].append(utterance_before)
-            elif d.get("utterance_org") and isinstance(d["utterance_org"], str):
-                d["utterance_org"] = [d["utterance_org"], utterance_before]
-            else:
-                d["utterance_org"] = [utterance_before]
-
-            d["utterance"] = rewritten
+            # Cập nhật lịch sử utterance (theo tác giả). RewriteRecord.utterance_org
+            # luôn là list (đã chuẩn hóa lúc from_dict) nên chỉ cần nối thêm.
+            utterance_before: str = deepcopy(x=d.utterance)
+            d.utterance_org = d.utterance_org + [utterance_before]
+            d.utterance = rewritten
 
             if QueryRewriter.is_early_stop(rewrite_output=rewritten):
                 logger.info(f"[Rewrite] Beam {beam_idx} | Sample {sample_idx}: → phát hiện Early Stop")
@@ -219,7 +226,7 @@ def run_rewrite(hop: int) -> None:
         # Lưu kết quả beam này
         out_file: str = os.path.join(out_dir, f"dev.{beam_idx}.json")
         with open(out_file, "w", encoding="utf-8") as f:
-            json.dump(beam_data, f, ensure_ascii=False, indent=2)
+            json.dump([r.to_dict() for r in beam_data], f, ensure_ascii=False, indent=2)
         logger.info(f"[Rewrite] Đã lưu beam {beam_idx} → {out_file}")
 
     logger.info(f"\n[Rewrite] Hoàn thành hop {hop}")

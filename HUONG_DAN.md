@@ -9,14 +9,14 @@ tabulation, w/o early stop) dùng để tái tạo Table 2, 3 và 4 của paper.
 
 1. [Cấu trúc project](#1-cấu-trúc-project)
 2. [Đặt data files](#2-đặt-data-files)
-3. [Cấu hình config.yaml](#3-cấu-hình-configyaml)
+3. [Cấu hình project](#3-cấu-hình-project)
     - [3b. Dùng nhiều model LLM local (Ollama)](#3b-dùng-nhiều-model-llm-local-ollama--chuyển-đổi-nhanh)
 4. [Option 1 — Offline/Debug (1 câu hỏi)](#4-option-1--offlinedebug-1-câu-hỏi)
     - [4b. Test riêng một method](#4b-test-riêng-một-method-python--m-methods)
 5. [Option 2 — Batch (toàn dataset)](#5-option-2--batch-toàn-dataset)
     - [5b. Chạy từng bước riêng lẻ](#5b-chạy-từng-bước-riêng-lẻ-chỉ-khi-method-murre)
 6. [Tái tạo Table 2/3 — So sánh MURRE vs Single-hop vs CRUSH](#6-tái-tạo-table-23--so-sánh-murre-vs-single-hop-vs-crush)
-    - [6b. Chạy nhanh 2 baseline không cần sửa config](#6b-chạy-nhanh-2-baseline-mà-không-cần-sửa-configyaml)
+    - [6b. Chạy nhanh 2 baseline không cần đổi method](#6b-chạy-nhanh-2-baseline-mà-không-cần-đổi-pipelinemethod)
 7. [Tái tạo Table 4 — Ablation Study](#7-tái-tạo-table-4--ablation-study)
 8. [Chạy API Service](#8-chạy-api-service)
     - [8b. GET /evaluate — metric thật của lần chạy](#8b-get-evaluate--tính-metric-thật-của-lần-chạy-trên-máy-này)
@@ -32,7 +32,8 @@ tabulation, w/o early stop) dùng để tái tạo Table 2, 3 và 4 của paper.
 ```
 MURRE/                               ← Thư mục gốc (Working Directory khi chạy)
 ├── src/                             ← Toàn bộ code (Sources Root)
-│   ├── config.py
+│   ├── config.py                    ← Settings + MẶC ĐỊNH của general/pipeline/paths/
+│   │                                  logging/api/run_option (xem mục 3)
 │   ├── main.py
 │   ├── api.py
 │   ├── core/                        ← Hạ tầng dùng chung cho MỌI method
@@ -44,22 +45,27 @@ MURRE/                               ← Thư mục gốc (Working Directory khi
 │   ├── methods/                     ← 3 method của Table 2, cùng interface run()
 │   │   ├── murre.py                 ← MURREPipeline — method chính (beam search, §3.2/§3.5)
 │   │   ├── single_hop.py            ← Baseline Single-hop (§4.2)
-│   │   ├── crush.py                 ← Baseline CRUSH (§4.2, prompt tự suy luận — xem mục 12)
-│   │   └── _cli.py                  ← Phần chung cho 3 entry point `python -m methods.*`
+│   │   └── crush.py                 ← Baseline CRUSH (§4.2, prompt tự suy luận — xem mục 12)
 │   ├── steps/                       ← Batch pipeline (Option 2)
 │   │   ├── embed.py                 ← Bước 1: mã hóa corpus
 │   │   ├── retrieve.py              ← Bước 2: dense retrieval mỗi hop
 │   │   ├── rewrite.py               ← Bước 3: Removal/Splice mỗi hop
 │   │   ├── score.py                 ← Bước 4: Score_Path / Score_Table (§3.5)
-│   │   └── infer.py                 ← Bước 5: sinh SQL
+│   │   ├── infer.py                 ← Bước 5: sinh SQL
+│   │   └── _common.py               ← find_json_files() dùng chung cho rewrite/score
+│   ├── models/                      ← Đối tượng NỘI BỘ dùng chung giữa các module
+│   │   ├── retrieval.py             ← RetrievedTable (method trả về), RetrievedRow (dòng JSON)
+│   │   └── records.py               ← TurnRecord / RewriteRecord / ResultRecord
 │   ├── schemas/                     ← Pydantic model cho request/response của API
 │   │   ├── retrieve.py              ← RetrieveRequest, TableResult
 │   │   ├── evaluate.py              ← EvalResult, AvailableRun
 │   │   └── health.py                ← HealthStatus
 │   ├── utils/
 │   │   ├── schema.py                ← build_schema_corpus, pack_table, filter
-│   │   ├── metric.py                ← recall@K, complete_recall@K
-│   │   └── logger.py                ← Logger dùng chung (MURRE_LOG_LEVEL)
+│   │   ├── metrics.py               ← recall@K, complete_recall@K
+│   │   ├── scoring.py               ← Norm(s) và Score_Path (§3.5, Appendix C)
+│   │   ├── display.py               ← print_results(): in bảng kết quả ra terminal
+│   │   └── logger.py                ← Logger dùng chung
 │   └── dataset/
 │       └── loader.py                ← load_tables, load_dev, load_gold
 │
@@ -74,7 +80,7 @@ MURRE/                               ← Thư mục gốc (Working Directory khi
 │
 ├── outputs/                         ← Kết quả tự động tạo khi chạy
 ├── .env / .env.example
-├── config.yaml
+├── config.yaml                      ← CHỈ còn 2 section: encoder + llm (xem mục 3)
 └── requirements.txt
 ```
 
@@ -99,23 +105,54 @@ cp path/to/gold.txt     dataset/spider/gold.txt
 - `dev.json`: list câu hỏi, mỗi câu có `utterance` (câu hỏi) và `rel_schema` (list
   schema đúng — dùng làm gold để tính recall).
 
-## 3. Cấu hình config.yaml
+## 3. Cấu hình project
+
+Cấu hình nằm ở **hai chỗ**, sửa đúng chỗ thì mới có tác dụng:
+
+| Section | Sửa ở đâu |
+|---|---|
+| `encoder`, `llm` | `config.yaml` (gốc project) |
+| `general`, `pipeline`, `paths`, `logging`, `api`, `run_option` | `src/config.py` — giá trị mặc định của các class `*Config` |
+
+`config.yaml` chỉ còn 2 section `encoder` và `llm`. Các section còn lại đã chuyển
+thành **giá trị mặc định ngay trong `src/config.py`** (`GeneralConfig`,
+`PipelineConfig`, `PathsConfig`, `LoggingConfig`, `ApiConfig`, `RunOptionConfig`) —
+đổi tham số nghĩa là sửa giá trị mặc định của field tương ứng trong class đó.
+
+> **Vẫn dùng lại được YAML bất cứ lúc nào.** `Settings` đọc `config.yaml` rồi ghi đè
+> lên mặc định trong code, nên thêm lại section vào `config.yaml` (ví dụ dán lại cả
+> khối `pipeline:`) là section đó thắng, không cần sửa `src/config.py`. Cách này tiện
+> khi muốn giữ nhiều cấu hình song song qua biến môi trường `MURRE_CONFIG_PATH`.
 
 Các tham số quan trọng nhất:
 
-| Tham số | Mặc định | Ý nghĩa |
-|---|---|---|
-| `general.dataset` | `spider` | `spider` hoặc `bird` |
-| `pipeline.method` | `murre` | `murre` \| `single_hop` \| `crush` — chọn phương pháp retrieval |
-| `pipeline.beam_size` | `5` | B trong paper |
-| `pipeline.max_hop` | `3` | H trong paper |
-| `pipeline.ablation.removal` | `true` | `false` = "w/o removal" (Table 4) |
-| `pipeline.ablation.tabulation` | `true` | `false` = "w/o tabulation" (Table 4) |
-| `pipeline.ablation.early_stop` | `true` | `false` = "w/o early stop" (Table 4) |
-| `run_option.mode` | `offline` | `offline` (Option 1) hoặc `batch` (Option 2) |
+| Tham số | Mặc định | Sửa ở | Ý nghĩa |
+|---|---|---|---|
+| `general.dataset` | `spider` | `GeneralConfig` (config.py) | `spider` hoặc `bird` |
+| `general.scale` | `125m` | `GeneralConfig` (config.py) | `125m` \| `1.3b` \| `2.7b` \| `5.8b` |
+| `pipeline.method` | `murre` | `PipelineConfig` (config.py) | `murre` \| `single_hop` \| `crush` — chọn phương pháp retrieval |
+| `pipeline.beam_size` | `5` | `PipelineConfig` (config.py) | B trong paper |
+| `pipeline.max_hop` | `3` | `PipelineConfig` (config.py) | H trong paper |
+| `pipeline.ablation.removal` | `True` | `AblationConfig` (config.py) | `False` = "w/o removal" (Table 4) |
+| `pipeline.ablation.tabulation` | `True` | `AblationConfig` (config.py) | `False` = "w/o tabulation" (Table 4) |
+| `pipeline.ablation.early_stop` | `True` | `AblationConfig` (config.py) | `False` = "w/o early stop" (Table 4) |
+| `run_option.mode` | `offline` | `RunOptionConfig` (config.py) | `offline` (Option 1) hoặc `batch` (Option 2) |
+| `encoder.model_name` | SGPT-125M | `config.yaml` | PHẢI khớp `general.scale` |
+| `encoder.batch_size` | `256` | `config.yaml` | Giảm nếu hết RAM |
+| `llm.active_profile` | `qwen2.5-0.5b` | `config.yaml` | Xem mục 3b |
 
-3 cờ `ablation.*` **chỉ có tác dụng khi `pipeline.method: murre`** — khi
+3 cờ `ablation.*` **chỉ có tác dụng khi `pipeline.method = "murre"`** — khi
 `method` là `single_hop`/`crush`, các cờ này bị bỏ qua.
+
+Xem cấu hình đang thực sự hiệu lực (sau khi trộn YAML + mặc định trong code + `.env`):
+
+```bash
+python -m config           # in toàn bộ config dạng JSON
+python -m config --paths   # in mọi đường dẫn đã resolve theo cfg hiện tại
+python -m config --llm     # liệt kê profile LLM trong config.yaml
+```
+
+> Mọi lệnh **xem** cấu hình đều nằm ở `config.py`. `main.py` chỉ để **chạy** pipeline.
 
 ## 3b. Dùng nhiều model LLM local (Ollama) — chuyển đổi nhanh
 
@@ -140,16 +177,19 @@ llm:
 ```
 
 Xem nhanh các profile đã khai báo:
+
 ```bash
-python -m main --list-llm-profiles
+python -m config --llm
 ```
 
 Đổi model cho **cả project** (batch, offline, API): sửa `llm.active_profile` trong
 `config.yaml`.
 
-Đổi model **tạm thời chỉ cho 1 lần chạy Option 1** (không cần sửa config.yaml):
-```bash
-python -m main --question "..." --llm-profile qwen2.5-14b
+Đổi model **tạm thời chỉ cho 1 lần chạy Option 1** (không cần sửa config.yaml): đặt
+`LLM_PROFILE` trong khối `__main__` của `src/main.py`:
+
+```python
+LLM_PROFILE: str | None = "qwen2.5-14b"
 ```
 
 Đổi model trong code (ví dụ khi viết script riêng để so sánh nhiều model):
@@ -164,17 +204,29 @@ profile mới trong `config.yaml` — không cần sửa code.
 
 ## 4. Option 1 — Offline/Debug (1 câu hỏi)
 
-```yaml
-run_option:
-  mode: offline
+Trong `src/config.py`, class `RunOptionConfig`:
+
+```python
+class RunOptionConfig(BaseModel):
+    mode: str = "offline"      # ← Option 1
 ```
+
+`src/main.py` **không nhận tham số dòng lệnh** — sửa thẳng mấy biến HOA trong khối
+`__main__` ở cuối file (cùng kiểu với `methods/murre.py`), rồi:
 
 ```bash
-python -m main --question "Which airlines have a flight to AHD?" --verbose
-python -m main --show-config
+python -m main
 ```
 
-`--verbose` in chi tiết từng hop (chỉ có ý nghĩa với `method: murre`).
+```python
+# src/main.py — khối __main__
+QUESTION: str | None = "Which airlines have a flight to AHD?"
+VERBOSE: bool = True        # in chi tiết từng hop (chỉ có ý nghĩa với method murre)
+TOP_N: int = 5              # số bảng in ra
+```
+
+`QUESTION` khác `None` thì tự chạy Option 1, kể cả khi `run_option.mode` là `batch`.
+Để `QUESTION = None` thì lấy câu đầu tiên trong `dev.json`.
 
 ### 4b. Test riêng một method (`python -m methods.*`)
 
@@ -252,20 +304,37 @@ lẫn giữa các lần chạy ablation:
 
 ## 5. Option 2 — Batch (toàn dataset)
 
-```yaml
-run_option:
-  mode: batch
+Trong `src/config.py`, class `RunOptionConfig`:
+
+```python
+class RunOptionConfig(BaseModel):
+    mode: str = "batch"        # ← Option 2
 ```
 
 ```bash
 python -m main
 ```
 
-Nếu `pipeline.method: murre`, pipeline tự chạy tuần tự: `embed → retrieve(hop0) →
-[rewrite(hop) → retrieve(hop+1, mỗi beam)] × max_hop → score → infer`.
+`main.py` chọn đường chạy theo `pipeline.method`:
 
-Nếu `pipeline.method` là `single_hop`/`crush` thì không có multi-hop: 2 baseline
-này hiện chỉ chạy được từng câu một qua khối `__main__` của `src/methods/` (mục 6b).
+| `pipeline.method` | Đường chạy | Các bước |
+|---|---|---|
+| `murre` | chuỗi `steps/*.py` | `embed → retrieve(hop0) → [rewrite(hop) → retrieve(hop+1, mỗi beam)] × max_hop → score → infer` |
+| `single_hop` / `crush` | `core/runner.py` | gọi thẳng `methods/*.run()` cho từng câu rồi ghi `result` + `score` |
+
+2 baseline không có multi-hop nên không dùng được chuỗi `steps/`; `core/runner.py`
+chạy chúng trên cả `dev.json` bằng một đường code riêng. Đường này **không sinh SQL**
+(không có bước `infer`) — chỉ MURRE chạy đủ 5 bước.
+
+Bước `embed` tự bỏ qua nếu cache `.pt` đã có; đặt `FORCE_EMBED = True` để ép
+mã hóa lại (cần khi đổi dataset hoặc đổi encoder).
+
+Chạy thử nhanh trên vài câu đầu (chỉ `single_hop`/`crush`):
+
+```python
+# src/main.py — khối __main__
+LIMIT: int | None = 8
+```
 
 ### 5b. Chạy từng bước riêng lẻ (chỉ khi `method: murre`)
 
@@ -275,11 +344,11 @@ chạy lại đúng một bước bị lỗi mà không phải làm lại từ �
 **Thứ tự phụ thuộc.** `retrieve` và `rewrite` xen kẽ nhau, mỗi bước đọc output của
 bước trước. Sơ đồ dưới đây viết đầy đủ **không rút gọn**, đúng theo cấu hình mặc định
 của paper (`beam_size: 5` → beam `0..4`; `max_hop: 3` → hop `0..3`). Mọi đường dẫn
-đều tính từ `outputs/{dataset}/{scale}/{method}/`, trừ `embeddings.json` nằm ở
-`outputs/{dataset}/{scale}/` (dùng chung cho cả 3 method):
+đều tính từ `outputs/{dataset}/{scale}/{method}/`, trừ cache embeddings nằm ở
+`outputs/{dataset}_{scale}_embeddings.pt` (dùng chung cho cả 3 method):
 
 ```
-embed                                           → embeddings.json
+embed                                           → {dataset}_{scale}_embeddings.pt
 └─ retrieve --hop 0                             → turn0/dev.json
    └─ rewrite  --hop 0                          → rewrite/outputs/turn0/dev.0.json
       │                                           rewrite/outputs/turn0/dev.1.json
@@ -330,7 +399,8 @@ Ba quy tắc đọc ra từ sơ đồ trên:
   `retrieve` chạy ở hop `0..max_hop` (0, 1, 2, 3). `rewrite --hop 3` là vô nghĩa vì
   không còn hop 4 nào dùng output của nó.
 
-Nếu bạn đổi `beam_size` hoặc `max_hop` trong `config.yaml`, số nhánh trong sơ đồ đổi
+Nếu bạn đổi `beam_size` hoặc `max_hop` (class `PipelineConfig` trong
+`src/config.py`), số nhánh trong sơ đồ đổi
 theo: mỗi hop có đúng `beam_size` lệnh `retrieve`, và có `max_hop` lệnh `rewrite`
 (hop `0` tới `max_hop-1`).
 
@@ -408,7 +478,7 @@ python -m steps.infer --top_k 5
 
 | Lệnh | Tham số | Đọc từ | Ghi ra |
 |---|---|---|---|
-| `steps.embed` | *(không có)* | `dataset/{ds}/tables.json` | `embeddings.json` |
+| `steps.embed` | *(không có)* | `dataset/{ds}/tables.json` | `{dataset}_{scale}_embeddings.pt` |
 | `steps.retrieve` | `--hop N` (bắt buộc), `--beam B` (bắt buộc khi N≥1) | hop 0: `dev.json`<br>hop N: `rewrite/outputs/turn{N-1}/dev.{B}.json` | hop 0: `turn0/dev.json`<br>hop N: `turn{N}/dev.{B}.json` |
 | `steps.rewrite` | `--hop N` (bắt buộc) | `turn{N}/` (mọi beam) | `rewrite/outputs/turn{N}/dev.{0..B-1}.json` |
 | `steps.score` | *(không có)* | `turn0/` + `turn{1..max_hop}/` | `result/turn{max_hop}/{dev,score}.json` |
@@ -423,28 +493,29 @@ beam nào).
 **Chi phí LLM.** Mỗi `rewrite --hop N` gọi LLM `beam_size × số câu hỏi` lần — với
 Spider dev (658 câu), beam 5 là 3.290 lần gọi mỗi hop, 3 hop là ~9.870 lần. Chạy
 model local qua Ollama thì miễn phí nhưng mất nhiều giờ; nếu chỉ muốn kiểm tra
-pipeline chạy đúng, hãy giảm tạm `beam_size: 2` và `max_hop: 1` trước.
+pipeline chạy đúng, hãy giảm tạm `beam_size = 2` và `max_hop = 1` trong
+`PipelineConfig` (`src/config.py`) trước.
 
 ## 6. Tái tạo Table 2/3 — So sánh MURRE vs Single-hop vs CRUSH
 
-Đổi `pipeline.method` trong `config.yaml` rồi chạy lại `python -m main` (mode: batch)
-cho từng giá trị:
+Đổi `method` trong class `PipelineConfig` (`src/config.py`) rồi chạy lại
+`python -m main` (mode: batch) cho từng giá trị:
 
-```yaml
-pipeline:
-  method: murre        # rồi: python -m main
-  method: single_hop   # rồi: python -m main
-  method: crush         # rồi: python -m main
+```python
+class PipelineConfig(BaseModel):
+    method: str = "murre"        # rồi: python -m main
+    # method: str = "single_hop" # rồi: python -m main
+    # method: str = "crush"      # rồi: python -m main
 ```
 
 Mỗi lần chạy, kết quả `recall@k` / `complete_recall@k` được in ra và lưu tại
 `outputs/{dataset}/{scale}/{method}/result/turn{max_hop}/score.json` — vì đường dẫn
 output có `{method}`, kết quả của 3 phương pháp không đè lên nhau.
 
-### 6b. Chạy nhanh 2 baseline mà không cần sửa `config.yaml`
+### 6b. Chạy nhanh 2 baseline mà không cần đổi `pipeline.method`
 
 Mỗi baseline có khối `__main__` riêng, test được **một** câu hỏi mà không phải đổi
-`pipeline.method` trong `config.yaml`:
+`pipeline.method` trong `src/config.py`:
 
 ```bash
 python src/methods/single_hop.py
@@ -457,15 +528,15 @@ python src/methods/crush.py
 | Biến trong `crush.py` | Ý nghĩa |
 |---|---|
 | `QUESTION` | Câu hỏi cần test; `None` → lấy câu đầu tiên trong `dev.json` |
-| `DATASET` | Ghi đè `general.dataset`; `None` → theo `config.yaml` |
+| `DATASET` | Ghi đè `general.dataset`; `None` → theo `src/config.py` |
 | `TOP_N` | Số bảng in ra |
 | `LLM_PROFILE` | Ghi đè `llm.active_profile`; `None` → theo `config.yaml` |
 | `COLLECTIVE` | `False` = tắt collective retrieval (xem giải thích bên dưới) |
 
-> **Đã bỏ `steps/run_baseline.py`.** Script chạy batch toàn bộ dev set cho 2 baseline
-> không còn nữa, nên hiện **không có gì sinh ra `result.json`/`score.json` cho
-> `single_hop`/`crush`** — cũng đồng nghĩa endpoint `/evaluate` của API không có dữ
-> liệu cho 2 method này. Muốn lấy số liệu Table 2/3 thì phải viết lại script batch.
+> **Muốn số liệu Table 2/3 cho 2 baseline** thì không dùng khối `__main__` (chỉ 1 câu)
+> mà chạy batch: đặt `pipeline.method` thành `single_hop`/`crush` rồi `python -m main`
+> với `run_option.mode = "batch"`. `core/runner.py` chạy cả `dev.json` và ghi ra
+> `result/turn{max_hop}/{dev,score}.json` — đúng file mà `/evaluate` đọc (mục 5).
 
 **Collective retrieval trong CRUSH.** LLM thường hallucinate ra *nhiều* bảng, mỗi bảng
 một dòng. Mặc định (`collective=True`) mỗi dòng được encode thành **một query riêng**,
@@ -487,35 +558,33 @@ gốc dùng `gpt-3.5-turbo` (§4.1).
 
 ## 7. Tái tạo Table 4 — Ablation Study
 
-Giữ `pipeline.method: murre`, chỉ đổi từng cờ ablation (mỗi lần đổi 1 cờ, giữ 2 cờ
-còn lại = true, đúng thiết kế ablation "chỉ tắt một cơ chế mỗi lần" của paper):
+Giữ `pipeline.method = "murre"`, chỉ đổi từng cờ trong class `AblationConfig`
+(`src/config.py`) — mỗi lần đổi 1 cờ, giữ 2 cờ còn lại = `True`, đúng thiết kế
+ablation "chỉ tắt một cơ chế mỗi lần" của paper:
 
-```yaml
-pipeline:
-  ablation:
-    removal: false       # → "w/o removal" — python -m main (mode: batch)
-    tabulation: true
-    early_stop: true
+```python
+class AblationConfig(BaseModel):
+    removal: bool = False      # → "w/o removal" — python -m main (mode: batch)
+    tabulation: bool = True
+    early_stop: bool = True
 ```
-```yaml
-pipeline:
-  ablation:
-    removal: true
-    tabulation: false     # → "w/o tabulation"
-    early_stop: true
+```python
+class AblationConfig(BaseModel):
+    removal: bool = True
+    tabulation: bool = False   # → "w/o tabulation"
+    early_stop: bool = True
 ```
-```yaml
-pipeline:
-  ablation:
-    removal: true
-    tabulation: true
-    early_stop: false      # → "w/o early stop"
+```python
+class AblationConfig(BaseModel):
+    removal: bool = True
+    tabulation: bool = True
+    early_stop: bool = False   # → "w/o early stop"
 ```
 
 **Lưu ý:** đường dẫn output không phân biệt theo cờ ablation (chỉ phân biệt theo
 `method`) — nếu muốn giữ kết quả của nhiều lần chạy ablation khác nhau, đổi tạm
-`general.scale` (ví dụ `125m-no-removal`) trước khi chạy, hoặc backup thư mục
-`outputs/` sau mỗi lần.
+`general.scale` trong `GeneralConfig` (ví dụ `"125m-no-removal"`) trước khi chạy,
+hoặc backup thư mục `outputs/` sau mỗi lần.
 
 ## 8. Chạy API Service
 
@@ -526,9 +595,9 @@ Xem docs tại `http://localhost:8000/docs`.
 
 | Endpoint | Việc |
 |---|---|
-| `POST /retrieve` | Retrieve bảng cho 1 câu hỏi, dùng đúng `pipeline.method` trong `config.yaml` |
+| `POST /retrieve` | Retrieve bảng cho 1 câu hỏi, dùng đúng `pipeline.method` đang cấu hình |
 | `GET /health` | Trạng thái service + dataset đã nạp |
-| `GET /config` | Toàn bộ `config.yaml` đang hiệu lực |
+| `GET /config` | Toàn bộ cấu hình đang hiệu lực (`config.yaml` + mặc định trong `src/config.py`) |
 | `GET /evaluate` | **Tính recall@k / complete_recall@k thật** của lần chạy (xem dưới) |
 | `GET /evaluate/available` | Liệt kê tổ hợp (dataset, model, method) đã có kết quả |
 
@@ -604,9 +673,9 @@ tự cập nhật theo.
 
 ```
 outputs/
-├── {dataset}_embeddings.pt                         ← Cache embeddings dùng chung
+├── {dataset}_{scale}_embeddings.pt                 ← Cache embeddings dùng chung
+├── logs/murre.log                                  ← LoggingConfig.log_to_file = True
 └── {dataset}/{scale}/{method}/
-    ├── embeddings.json
     ├── turn0/dev.json                              ← Kết quả Hop-0 (mọi method)
     ├── rewrite/outputs/turn{hop}/dev.{beam}.json    ← Chỉ method=murre
     ├── turn{hop}/dev.{beam}.json                    ← Chỉ method=murre
@@ -678,10 +747,15 @@ Cách lâu dài: mở Environment Variables của Windows, đưa các đường 
 → Chưa chạy `steps.retrieve --hop N --beam b` cho hop đó. `rewrite --hop N` đọc thư
 mục `turn{N}/`, nên phải retrieve xong hop N trước. Xem sơ đồ phụ thuộc ở mục 5b.
 
-**`KeyError: 'retrieved'`** (khi chạy `steps.rewrite`)
+**`ValueError: File ... không có bảng nào trong trường 'retrieved'`** (khi chạy
+`steps.rewrite`)
 → Thư mục đầu vào chứa file *đã viết lại* (`rewrite/outputs/turn{N}/`) chứ không phải
 kết quả retrieve. File rewrite không có trường `retrieved`. Đúng thư mục đầu vào phải
 là `turn{N}/` — xem bảng "Tham số của từng bước" ở mục 5b.
+
+> Trước đây lỗi này hiện ra dưới dạng `KeyError: 'retrieved'`. Từ khi các file JSON
+> có model riêng (`src/models/records.py`), `steps/rewrite.py` kiểm tra ngay lúc đọc
+> file và báo rõ nguyên nhân kèm cách sửa.
 
 **`FileNotFoundError: config.yaml`**
 → Working Directory đang không phải thư mục gốc `MURRE/`. Với PyCharm, sửa trong

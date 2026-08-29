@@ -3,13 +3,14 @@ top-N bảng từ câu hỏi gốc, không có hop thứ hai, không Removal/Sup
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import List
 
 import torch
 import torch.nn.functional as F
 
 from config import cfg
 from core.encoder import SGPTEncoder
+from models.retrieval import RetrievedTable
 
 
 class SingleHopRetriever:
@@ -25,7 +26,7 @@ class SingleHopRetriever:
         corpus: List[str],
         schema_embeddings: torch.Tensor,
         verbose: bool = False,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[RetrievedTable]:
         q_emb: torch.Tensor = self.encoder.encode(texts=[question], is_query=True)
         q_norm_vec: torch.Tensor = F.normalize(input=q_emb, p=2, dim=1)
         d_norm_vec: torch.Tensor = F.normalize(input=schema_embeddings, p=2, dim=1)
@@ -39,7 +40,7 @@ class SingleHopRetriever:
             logger.info(f"[SingleHop] Top-3: {[corpus[i] for i in top_idx.tolist()[:3]]}")
 
         return [
-            {"schema": corpus[idx], "score": float(val)}
+            RetrievedTable(schema=corpus[idx], score=float(val))
             for idx, val in zip(top_idx.tolist(), top_vals.tolist())
         ]
 
@@ -50,17 +51,15 @@ class SingleHopRetriever:
 if __name__ == "__main__":
     from core.corpus import prepare
     from dataset.loader import load_dev, resolve_question
-    from methods._cli import print_results
+    from utils.display import print_results
 
     # --- Chỉnh trực tiếp mấy biến này để test ------------------------------
-    DATASET: str | None = None       # None → dùng general.dataset của config.yaml
+    DATASET: str | None = None       # None → dùng general.dataset của src/config.py
     if DATASET:
         # Phải set TRƯỚC load_dev(), nếu không sẽ đọc dev.json của dataset cũ.
         cfg.general.dataset = DATASET
 
     # Lấy câu số 21 của dev.json (câu cần 3 bảng). Đổi số trong [] để test câu khác;
-    # đặt None để lấy câu đầu tiên; hoặc gõ thẳng một chuỗi tự viết (khi đó không tra
-    # được gold nên sẽ không có ✓ và recall).
     QUESTION: str | None = load_dev()[21]["utterance"]
     TOP_N: int = 5                   # số bảng in ra
     # ----------------------------------------------------------------------

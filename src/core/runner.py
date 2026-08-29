@@ -1,10 +1,17 @@
 """core/runner.py — Chạy TRỌN pipeline cho một tổ hợp (dataset, model, method).
 
-Đây là bản "Option 1 — offline" (`run_option.mode` trong config.yaml): gọi thẳng
+Đây là bản "Option 1 — offline" (`run_option.mode` trong src/config.py): gọi thẳng
 `methods/*.run()` trong process, lặp qua từng câu của dev.json, rồi ghi ra ĐÚNG file
 mà `/evaluate` đọc (`paths.result` + `paths.score`). Nhờ vậy cả 3 method đều chạy
 được bằng một đường code, khác với `steps/*.py` (Option 2 — batch) chỉ ghép được
 multi-hop cho method=murre.
+
+File này giữ 3 thứ:
+
+  * run_pipeline()  — chạy cả dev.json cho một tổ hợp, ghi result + score.
+  * override_cfg()  — context manager tạm ghi đè cfg rồi trả lại nguyên trạng.
+                      Dùng chung cho cả runner lẫn main.py (xem docstring của nó).
+  * _RUN_LOCK       — chặn chạy chồng.
 
 Lưu ý về đồng thời: `cfg` là biến toàn cục của process, nên một lần chạy phải tạm
 ghi đè `cfg.general.dataset/scale`, `cfg.encoder.model_name`, `cfg.pipeline.method`.
@@ -28,6 +35,8 @@ from core.factory import build_retriever
 from core.llm import LLMGenerator
 from dataset.loader import load_dev
 from enums import Dataset, Method, ModelScale
+from models.records import ResultRecord
+from models.retrieval import RetrievedTable
 from utils import logger
 from utils.metrics import compute_res
 
@@ -43,16 +52,27 @@ class PipelineBusyError(RuntimeError):
 
 
 @contextmanager
-def override_run_config(
-    dataset: Dataset,
-    scale: ModelScale,
-    method: Method,
+def override_cfg(
+    dataset: Optional[Dataset] = None,
+    scale: Optional[ModelScale] = None,
+    method: Optional[Method] = None,
 ) -> Iterator[None]:
     """Tạm ghi đè cfg cho một lần chạy rồi trả lại nguyên trạng.
 
-    `encoder.model_name` phải đổi kèm `general.scale`: scale chỉ quyết định ĐƯỜNG DẪN
-    file, còn model thực sự nạp lên là `encoder.model_name`. Đổi một cái mà quên cái
-    kia sẽ ghi vector của model này vào cache mang tên model khác.
+    CHỈ đụng tới thứ được truyền vào; tham số để None thì giữ nguyên. Nhờ vậy một
+    hàm phục vụ được cả hai nhu cầu: đổi trọn bộ (run_pipeline) và chỉ đổi mỗi
+    method (main.py).
+
+    Phải dùng context manager vì nhiều chỗ đọc cfg NGẦM, không nhận tham số:
+      * core/factory.build_retriever()  → cfg.pipeline.method
+      * core/encoder.SGPTEncoder()      → cfg.encoder.model_name
+      * template trong PathsConfig      → {dataset} {scale} {method}
+
+    `scale` kéo theo `encoder.model_name`: scale chỉ quyết định ĐƯỜNG DẪN file, còn
+    model thực sự nạp lên là encoder.model_name. Đổi một cái mà quên cái kia sẽ ghi
+    vector của model này vào cache mang tên model khác. Ngược lại, truyền MỖI
+    `method` thì không đụng encoder — giữ nguyên model tuỳ chỉnh đặt qua config.yaml
+    hoặc .env (ENCODER_MODEL_NAME).
     """
     saved: Dict[str, Any] = {
         "dataset": cfg.general.dataset,
@@ -60,22 +80,31 @@ def override_run_config(
         "model_name": cfg.encoder.model_name,
         "method": cfg.pipeline.method,
     }
-    cfg.general.dataset = dataset.value
-    cfg.general.scale = scale.value
-    cfg.encoder.model_name = scale.model_name
-    cfg.pipeline.method = method.value
-    logger.info(
-        f"[Runner] cfg tạm: dataset={dataset} scale={scale} method={method} "
-        f"encoder={scale.model_name}"
-    )
+
+    changed: List[str] = []
+    if dataset is not None:
+        cfg.general.dataset = dataset.value
+        changed.append(f"dataset={dataset}")
+    if scale is not None:
+        cfg.general.scale = scale.value
+        cfg.encoder.model_name = scale.model_name
+        changed.append(f"scale={scale} encoder={scale.model_name}")
+    if method is not None:
+        cfg.pipeline.method = method.value
+        changed.append(f"method={method}")
+
+    if changed:
+        logger.info(f"[Runner] cfg tạm: {' '.join(changed)}")
     try:
         yield
     finally:
+        # Trả lại cả 4 cho gọn — gán lại đúng giá trị cũ thì không ảnh hưởng gì.
         cfg.general.dataset = saved["dataset"]
         cfg.general.scale = saved["scale"]
         cfg.encoder.model_name = saved["model_name"]
         cfg.pipeline.method = saved["method"]
-        logger.info("[Runner] Đã trả cfg về nguyên trạng.")
+        if changed:
+            logger.info("[Runner] Đã trả cfg về nguyên trạng.")
 
 
 def run_pipeline(
@@ -104,7 +133,7 @@ def run_pipeline(
             "lần lượt — đợi job hiện tại xong rồi thử lại."
         )
     try:
-        with override_run_config(dataset=dataset, scale=scale, method=method):
+        with override_cfg(dataset=dataset, scale=scale, method=method):
             return _run_locked(method=method, limit=limit, on_progress=on_progress)
     finally:
         _RUN_LOCK.release()
@@ -132,21 +161,18 @@ def _run_locked(
 
     logger.info(f"[Runner] Bắt đầu {method} trên {total} câu, corpus {len(corpus)} schemas.")
 
-    output: List[Dict[str, Any]] = []
+    output: List[ResultRecord] = []
     for i, d in enumerate(dev, start=1):
-        hits: List[Dict[str, Any]] = retriever.run(
+        hits: List[RetrievedTable] = retriever.run(
             question=d["utterance"], corpus=corpus, schema_embeddings=embs,
         )
-        output.append({
-            "utterance": d["utterance"],
-            "gold": d.get("rel_schema", []),
-            # Đặt tên khóa "similarity" để khớp file của steps/score.py — compute_res()
-            # và /evaluate chỉ đọc "schema", nhưng giữ cùng format cho dễ so sánh.
-            "retrieved": [
-                {"rank": rank, "schema": h["schema"], "similarity": h["score"]}
-                for rank, h in enumerate(hits)
-            ],
-        })
+        output.append(ResultRecord(
+            utterance=d["utterance"],
+            gold=d.get("rel_schema", []),
+            # to_rows() vừa đánh số rank vừa đổi `score` sang tên khóa `similarity`
+            # của file format — xem RetrievedTable.to_row().
+            retrieved=RetrievedTable.to_rows(tables=hits),
+        ))
         if on_progress is not None:
             on_progress(i, total)
         if i % 20 == 0 or i == total:
@@ -159,11 +185,11 @@ def _run_locked(
     score_file: str = cfg.outputs.score()
     os.makedirs(os.path.dirname(result_file), exist_ok=True)
     with open(result_file, "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False, indent=2)
+        json.dump([r.to_dict() for r in output], f, ensure_ascii=False, indent=2)
     with open(score_file, "w", encoding="utf-8") as f:
         json.dump(metrics, f, ensure_ascii=False, indent=2)
 
-    depth: int = min(len(d["retrieved"]) for d in output)
+    depth: int = min(len(d.retrieved) for d in output)
     logger.info(f"[Runner] Xong. result → {result_file} | score → {score_file}")
     return {
         "result_file": result_file,

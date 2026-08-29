@@ -1,5 +1,11 @@
 """core/factory.py — Khởi tạo đúng phương pháp retrieval theo cfg.pipeline.method,
 để main.py / steps/*.py không phải biết chi tiết từng phương pháp.
+
+Cả 3 retriever có chung một giao diện:
+
+    run(question, corpus, schema_embeddings, verbose=False) -> List[RetrievedTable]
+
+(xem models/retrieval.py). Nhờ vậy chỗ gọi không cần biết đang dùng method nào.
 """
 from __future__ import annotations
 
@@ -34,14 +40,21 @@ def build_retriever(
             f"Chỉ nhận: {Method.values()}"
         ) from None
 
-    if method is Method.MURRE:
-        assert llm is not None, "MURRE cần LLMGenerator cho pha Removal."
-        rewriter: QueryRewriter = QueryRewriter(llm=llm)
-        return MURREPipeline(encoder=encoder, rewriter=rewriter)
+    # Lưu ý khi thêm nhánh: LUÔN viết dạng có chấm (Method.MURRE). Viết trống tên
+    # (case MURRE) thì Python hiểu là "bắt mọi giá trị rồi gán vào biến MURRE" —
+    # nhánh đầu tiên sẽ nuốt hết mọi method mà không báo lỗi gì.
+    match method:
+        case Method.MURRE:
+            assert llm is not None, "MURRE cần LLMGenerator cho pha Removal."
+            rewriter: QueryRewriter = QueryRewriter(llm=llm)
+            return MURREPipeline(encoder=encoder, rewriter=rewriter)
 
-    if method is Method.SINGLE_HOP:
-        return SingleHopRetriever(encoder=encoder)
+        case Method.SINGLE_HOP:
+            return SingleHopRetriever(encoder=encoder)
 
-    assert method is Method.CRUSH, f"Method mới chưa xử lý trong build_retriever: {method}"
-    assert llm is not None, "CRUSH cần LLMGenerator để hallucinate schema."
-    return CrushRetriever(encoder=encoder, llm=llm, collective=crush_collective)
+        case Method.CRUSH:
+            assert llm is not None, "CRUSH cần LLMGenerator để hallucinate schema."
+            return CrushRetriever(encoder=encoder, llm=llm, collective=crush_collective)
+
+        case _:
+            raise ValueError(f"Method mới chưa xử lý trong build_retriever: {method}")

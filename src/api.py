@@ -24,6 +24,7 @@ from core.llm import LLMGenerator
 from core.runner import PipelineBusyError, run_pipeline
 from dataset.loader import load_bird_tables, load_spider_tables
 from enums import BaseStrEnum, Dataset, JobStatus, Method, ModelScale
+from models.records import ResultRecord
 from schemas.evaluate import AvailableRun, EvalResult
 from schemas.health import HealthStatus
 from schemas.pipeline import PipelineJob, PipelineRunRequest
@@ -75,7 +76,8 @@ def _build_dataset(ds_name: Dataset) -> Dict[str, Any]:
     tables = loader()
     corpus: List[str] = build_schema_corpus(tables=tables)
 
-    # Cache embeddings phải khớp template trong config.yaml (có cả {scale}), nếu
+    # Cache embeddings phải khớp template paths.embeddings_cache trong src/config.py
+    # (có cả {scale}), nếu
     # không sẽ nạp vector của scale khác → kết quả sai.
     cache_path: str = cfg.outputs.for_run(dataset=ds_name).embeddings_cache()
     embs: torch.Tensor
@@ -153,7 +155,7 @@ async def retrieve_tables(payload: RetrieveRequest) -> List[TableResult]:
             question=payload.question, corpus=ds["corpus"], schema_embeddings=ds["embs"],
         )
         return [
-            TableResult(rank=i + 1, table_schema=r["schema"], score=r["score"])
+            TableResult(rank=i + 1, table_schema=r.schema, score=r.score)
             for i, r in enumerate(results[: payload.top_n])
         ]
     except Exception as e:
@@ -330,12 +332,12 @@ def evaluate_run(
         )
 
     with open(result_file, "r", encoding="utf-8") as f:
-        data: List[Dict[str, Any]] = json.load(f)
+        data: List[ResultRecord] = ResultRecord.from_list(items=json.load(f))
 
     if not data:
         raise HTTPException(status_code=409, detail=f"{result_file} rỗng.")
 
-    depth: int = min(len(d.get("retrieved", [])) for d in data)
+    depth: int = min(len(d.retrieved) for d in data)
     if k > depth:
         # compute_recall_at_k() bỏ qua k > số bảng đã lưu → metric sẽ ra 0.0 mà
         # không báo gì. Chặn ở đây để không trả về số sai.
@@ -395,13 +397,13 @@ async def evaluate_available() -> List[AvailableRun]:
                 if not os.path.exists(f):
                     continue
                 with open(f, "r", encoding="utf-8") as fh:
-                    data = json.load(fh)
+                    data = ResultRecord.from_list(items=json.load(fh))
                 found.append(AvailableRun(
                     dataset=ds,
                     model=sc,
                     method=mt,
                     num_questions=len(data),
-                    retrieved_depth=min((len(d.get("retrieved", [])) for d in data), default=0),
+                    retrieved_depth=min((len(d.retrieved) for d in data), default=0),
                     result_file=f,
                 ))
     return found

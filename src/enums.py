@@ -46,14 +46,14 @@ class BaseStrEnum(str, Enum):
 
 
 class Dataset(BaseStrEnum):
-    """Dataset text-to-SQL được hỗ trợ (khớp `general.dataset` trong config.yaml)."""
+    """Dataset text-to-SQL được hỗ trợ (khớp `general.dataset` trong src/config.py)."""
 
     SPIDER = "spider"
     BIRD = "bird"
 
 
 class Method(BaseStrEnum):
-    """Phương pháp retrieval (khớp `pipeline.method` trong config.yaml)."""
+    """Phương pháp retrieval (khớp `pipeline.method` trong src/config.py)."""
 
     MURRE = "murre"
     SINGLE_HOP = "single_hop"
@@ -66,7 +66,7 @@ class Method(BaseStrEnum):
 
 
 class ModelScale(BaseStrEnum):
-    """Kích thước SGPT encoder (khớp `general.scale` trong config.yaml).
+    """Kích thước SGPT encoder (khớp `general.scale` trong src/config.py).
 
     Chấp nhận thêm tên gọi thân thiện dạng 'SGPT-125M' / 'sgpt-1.3b'.
     """

@@ -9,40 +9,17 @@ Nếu cfg.pipeline.ablation.early_stop = False, nhãn "None" bị bỏ qua — m
 from __future__ import annotations
 
 import json
-import math
 import os
 from typing import Any, Dict, List, Tuple
 
 from config import cfg
+from core.rewriter import QueryRewriter
+from models.records import BeamStep, ResultRecord, TurnRecord
+from models.retrieval import RetrievedRow
+from steps._common import find_json_files
 from utils import logger
 from utils.metrics import compute_recall_at_k, compute_res
-
-_EARLY_STOP_INDICATORS: List[str] = [
-    "There is no",
-    "None of the given tables",
-    "No additional tables",
-    "No completion needed",
-    "None",
-]
-
-
-def _find_json_files(directory: str) -> List[str]:
-    files: List[str] = []
-    for root, _, fnames in os.walk(directory):
-        for fname in fnames:
-            if fname.endswith(".json"):
-                files.append(os.path.join(root, fname))
-    return sorted(files)
-
-
-def norm(s: float) -> float:
-    """Norm(s) = (s + 1) / 2 — Appendix C của paper."""
-    return (s + 1) / 2
-
-
-def _judge_early_stop(utterance: str) -> bool:
-    return any(indicator in utterance for indicator in _EARLY_STOP_INDICATORS)
-
+from utils.scoring import path_score
 
 def run_score() -> None:
     top_k_list: List[int] = cfg.general.top_k
@@ -54,21 +31,22 @@ def run_score() -> None:
     logger.info("  BƯỚC 4: SCORE")
     logger.info("=" * 60)
 
-    retrieved_data: List[List[List[Dict[str, Any]]]] = []
+    # [hop][file][sample] — mỗi hop có beam_size file, trừ hop 0 chỉ có 1 file.
+    retrieved_data: List[List[List[TurnRecord]]] = []
 
     turn0_file: str = cfg.outputs.turn0()
     with open(turn0_file, "r", encoding="utf-8") as f:
-        retrieved_data.append([json.load(f)])
+        retrieved_data.append([TurnRecord.from_list(items=json.load(f))])
 
     for hop in range(1, max_hop + 1):
         turn_dir: str = os.path.dirname(cfg.outputs.turn_n(hop=hop, beam=0))
-        hop_files: List[str] = _find_json_files(directory=turn_dir)
+        hop_files: List[str] = find_json_files(directory=turn_dir)
         if not hop_files:
             break
-        hop_data: List[List[Dict[str, Any]]] = []
+        hop_data: List[List[TurnRecord]] = []
         for fpath in hop_files:
             with open(fpath, "r", encoding="utf-8") as f:
-                hop_data.append(json.load(f))
+                hop_data.append(TurnRecord.from_list(items=json.load(f)))
         retrieved_data.append(hop_data)
 
     num_turns: int = len(retrieved_data)
@@ -77,8 +55,8 @@ def run_score() -> None:
     schema_score: List[Dict[str, float]] = []
     for sample in retrieved_data[0][0]:
         score_map: Dict[str, float] = {}
-        for x in sample["retrieved"]:
-            score_map.setdefault(x["schema"], 0.0)
+        for x in sample.retrieved:
+            score_map.setdefault(x.schema, 0.0)
         schema_score.append(score_map)
 
     # Xác định hop mỗi câu hỏi dừng (Early Stop, hoặc hết max_hop nếu ablation tắt)
@@ -88,8 +66,8 @@ def run_score() -> None:
             for sample_idx in range(num_samples):
                 for file_data in retrieved_data[turn_idx]:
                     sample = file_data[sample_idx]
-                    utterance: str = sample.get("utterance", "")
-                    if _judge_early_stop(utterance=utterance) and end_turn[sample_idx] > turn_idx - 1:
+                    utterance: str = sample.utterance
+                    if QueryRewriter.is_early_stop(rewrite_output=utterance) and end_turn[sample_idx] > turn_idx - 1:
                         end_turn[sample_idx] = turn_idx - 1
     else:
         logger.info("[Score] Ablation w/o early_stop: bỏ qua nhãn 'None', dùng hết max_hop.")
@@ -105,50 +83,52 @@ def run_score() -> None:
         for file_data in retrieved_data[i_turn]:
             d = file_data[sample_idx]
 
-            for x in d["retrieved"]:
-                sel_db = d.get("selected_database", [])
+            sel_db: List[BeamStep] = d.selected_database
 
-                path_score: float
-                if sel_db:
-                    path_score = math.log(norm(s=x["similarity"])) + sum(
-                        math.log(norm(s=s[1])) for s in sel_db
-                    )
-                else:
-                    path_score = math.log(norm(s=x["similarity"]))
+            for x in d.retrieved:
+                # Score_Path của nhánh "đường đi đã có + bảng x" — cùng một hàm mà
+                # methods/murre.py dùng, xem utils/scoring.py.
+                score: float = path_score(
+                    similarities=[s[1] for s in sel_db] + [x.similarity]
+                )
 
-                schema_score[sample_idx][x["schema"]] = max(
-                    path_score, schema_score[sample_idx].get(x["schema"], float("-inf"))
+                schema_score[sample_idx][x.schema] = max(
+                    score, schema_score[sample_idx].get(x.schema, float("-inf"))
                 )
                 for s_item in sel_db:
                     schema_score[sample_idx][s_item[0]] = max(
-                        path_score, schema_score[sample_idx].get(s_item[0], float("-inf"))
+                        score, schema_score[sample_idx].get(s_item[0], float("-inf"))
                     )
 
-    final_output: List[Dict[str, Any]] = []
+    final_output: List[ResultRecord] = []
     for sample_idx, scores in enumerate(schema_score):
         ranked: List[Tuple[str, float]] = sorted(scores.items(), key=lambda item: item[1], reverse=True)[:top_k_max]
 
-        retrieved_list: List[Dict[str, Any]] = [
-            {"rank": k, "schema": schema, "similarity": score}
+        retrieved_list: List[RetrievedRow] = [
+            RetrievedRow(rank=k, schema=schema, similarity=score)
             for k, (schema, score) in enumerate(ranked)
         ]
 
-        base = retrieved_data[0][0][sample_idx]
-        gold: List[str] = base.get("gold", [])
+        # Giữ nguyên record của turn0 rồi chỉ thay retrieved/recall — nhờ `extra` của
+        # ResultRecord mà input/utterance_org/selected_database không bị mất, và thứ
+        # tự khóa trong file ra vẫn y như trước.
+        base: TurnRecord = retrieved_data[0][0][sample_idx]
         recall: Dict[int, float] = compute_recall_at_k(
-            top_k=top_k_list, pred_list=[r["schema"] for r in retrieved_list], gold_list=gold,
+            top_k=top_k_list, pred_list=[r.schema for r in retrieved_list], gold_list=base.gold,
         )
 
-        base["retrieved"] = retrieved_list
-        base["recall"] = recall
-        final_output.append(base)
+        merged: Dict[str, Any] = base.to_dict()
+        merged["recall"] = recall
+        record: ResultRecord = ResultRecord.from_dict(d=merged)
+        record.retrieved = retrieved_list
+        final_output.append(record)
 
     result_file: str = cfg.outputs.result()
     score_file: str = cfg.outputs.score()
     os.makedirs(os.path.dirname(result_file), exist_ok=True)
 
     with open(result_file, "w", encoding="utf-8") as f:
-        json.dump(final_output, f, ensure_ascii=False, indent=2)
+        json.dump([r.to_dict() for r in final_output], f, ensure_ascii=False, indent=2)
 
     metrics: Dict[str, Dict[int, float]] = compute_res(top_k=top_k_list, data=final_output)
     with open(score_file, "w", encoding="utf-8") as f:

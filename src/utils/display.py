@@ -1,21 +1,21 @@
-"""methods/_cli.py — Phần dùng chung cho entry point của 3 file method.
+"""utils/display.py — In kết quả retrieve ra terminal cho người đọc.
 
-Mỗi method (murre.py / single_hop.py / crush.py) tự có khối `__main__` riêng để
-chạy và test độc lập; mỗi khối tự khai báo biến riêng ở đầu; file này chỉ giữ phần
-in kết quả dùng chung để không phải viết lại 3 lần.
+Dùng chung cho main.py và khối `__main__` của 3 file trong methods/, để không phải
+viết lại phần in 4 lần.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import List
 
 from config import cfg
 from dataset.loader import gold_for
+from models.retrieval import RetrievedTable
 
 
 def print_results(
     method: str,
     question: str,
-    results: List[Dict[str, Any]],
+    results: List[RetrievedTable],
     top_n: int,
 ) -> None:
     """In kết quả retrieve, đánh dấu ✓ vào bảng trùng gold (nếu tra được gold)."""
@@ -37,10 +37,10 @@ def print_results(
     hits: int = 0
     for i, r in enumerate(results[:top_n], start=1):
         mark: str = " "
-        if gold and r["schema"] in gold:
+        if gold and r.schema in gold:
             mark = "✓"
             hits += 1
-        print(f"  {mark} {i:>2}. {r['score']:.4f}  {r['schema']}")
+        print(f"  {mark} {i:>2}. {r.score:.4f}  {r.schema}")
 
     if gold:
         print(f"\n  → recall@{top_n} = {hits}/{len(gold)} = {hits / len(gold):.2%}")

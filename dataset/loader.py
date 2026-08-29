@@ -94,16 +94,8 @@ def load_spider_tables() -> List[Dict[str, Any]]:
     return _load_json(path="dataset/spider/tables.json")
 
 
-def load_spider_dev() -> List[Dict[str, Any]]:
-    return _load_json(path="dataset/spider/dev.json")
-
-
 def load_bird_tables() -> List[Dict[str, Any]]:
     return _load_json(path="dataset/bird/tables.json")
-
-
-def load_bird_dev() -> List[Dict[str, Any]]:
-    return _load_json(path="dataset/bird/dev.json")
 
 
 

@@ -1,24 +1,18 @@
-"""methods/crush.py — Baseline CRUSH (Kothyari et al., 2023; §4.2, Table 2/3):
-dùng LLM "hallucinate" (đoán) một schema giả định trực tiếp từ câu hỏi gốc (không có
-ngữ cảnh database nào), rồi retrieve bằng chính văn bản hallucinate đó.
+"""methods/crush.py — Baseline CRUSH (Kothyari et al., 2023; §4.2, Table 2/3).
 
-LLM thường đoán ra NHIỀU bảng (mỗi bảng 1 dòng). CRUSH gốc retrieve riêng cho từng
-bảng đã đoán rồi hợp nhất kết quả ("collective retrieval") — nếu gộp cả nhiều dòng
-thành 1 chuỗi rồi encode 1 lần, embedding bị trung bình hóa giữa các bảng khác nhau
-và điểm similarity bị loãng. Vì vậy run() tách từng dòng, encode riêng, và lấy điểm
-CAO NHẤT trên mỗi bảng corpus (max-aggregation) — đúng quy ước mà
-steps/retrieve.py::retrieve_for_queries() dùng cho multi-subquery của MURRE, nên hai
-phương pháp so sánh được với nhau một cách công bằng.
+LLM "hallucinate" (đoán) một schema giả định từ câu hỏi gốc, không có ngữ cảnh
+database nào, rồi retrieve bằng chính văn bản đoán được đó.
 
-LƯU Ý: paper KHÔNG công khai chi tiết prompt CRUSH gốc trong phần chính (chỉ nhắc
-"converting the user question into a table format through hallucination"). Prompt
-dùng ở đây (prompts/{dataset}_crush.txt) là suy luận hợp lý theo mô tả đó, KHÔNG
-phải nguyên văn prompt của Kothyari et al. (2023) — nếu cần khớp chính xác số liệu
-paper, hãy thay bằng prompt gốc từ https://github.com/kothyari/CRUSH4SQL nếu có.
+LLM thường đoán ra nhiều bảng, mỗi bảng 1 dòng: run() encode TỪNG dòng thành một
+query riêng rồi lấy điểm cao nhất cho mỗi bảng corpus (max-aggregation). Lý do và
+cờ COLLECTIVE: xem HUONG_DAN.md mục 6b.
+
+LƯU Ý: prompts/{dataset}_crush.txt là prompt tự suy luận, KHÔNG phải nguyên văn của
+Kothyari et al. — số liệu chạy ra không khớp chính xác Table 2/3 (HUONG_DAN.md mục 12).
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import List
 
 import torch
 import torch.nn.functional as F
@@ -26,6 +20,7 @@ import torch.nn.functional as F
 from config import cfg
 from core.encoder import SGPTEncoder
 from core.llm import LLMGenerator
+from models.retrieval import RetrievedTable
 
 
 class CrushRetriever:
@@ -87,7 +82,7 @@ class CrushRetriever:
         corpus: List[str],
         schema_embeddings: torch.Tensor,
         verbose: bool = False,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[RetrievedTable]:
         hallucinated: str = self._hallucinate_schema(question=question)
         self.last_hallucinated = hallucinated
 
@@ -111,7 +106,7 @@ class CrushRetriever:
         top_vals, top_idx = torch.topk(input=scores, k=k)
 
         return [
-            {"schema": corpus[idx], "score": float(val)}
+            RetrievedTable(schema=corpus[idx], score=float(val))
             for idx, val in zip(top_idx.tolist(), top_vals.tolist())
         ]
 
@@ -122,19 +117,17 @@ class CrushRetriever:
 if __name__ == "__main__":
     from core.corpus import prepare
     from dataset.loader import load_dev, resolve_question
-    from methods._cli import print_results
+    from utils.display import print_results
 
     # --- Chỉnh trực tiếp mấy biến này để test ------------------------------
-    DATASET: str | None = None       # None → dùng general.dataset của config.yaml
+    DATASET: str | None = None       # None → dùng general.dataset của src/config.py
     if DATASET:
         # Phải set TRƯỚC load_dev(), nếu không sẽ đọc dev.json của dataset cũ.
         cfg.general.dataset = DATASET
 
     # Lấy câu số 21 của dev.json (câu cần 3 bảng). Đổi số trong [] để test câu khác;
-    # đặt None để lấy câu đầu tiên; hoặc gõ thẳng một chuỗi tự viết (khi đó không tra
-    # được gold nên sẽ không có ✓ và recall).
     QUESTION: str | None = load_dev()[21]["utterance"]
-    TOP_N: int = 5                   # số bảng in ra
+    TOP_N: int = 5
     LLM_PROFILE: str | None = None   # None → dùng llm.active_profile
     COLLECTIVE: bool = True          # True: retrieve riêng từng bảng LLM đoán
     #                                  False: gộp mọi bảng thành 1 query duy nhất
@@ -152,7 +145,6 @@ if __name__ == "__main__":
         question=question, corpus=corpus, schema_embeddings=embs, verbose=False,
     )
 
-    # Phần đặc trưng của CRUSH: xem LLM đã đoán ra schema gì
     print()
     print(f"  LLM hallucinate ({'collective' if COLLECTIVE else 'gộp 1 query'}):")
     for line in retriever._split_schemas(retriever.last_hallucinated):
