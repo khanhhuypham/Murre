@@ -49,9 +49,11 @@ class SingleHopRetriever:
 # ĐIỂM CHẠY ĐỘC LẬP — test riêng method này với 1 câu hỏi
 # =============================================================================
 if __name__ == "__main__":
-    from core.corpus import prepare
-    from dataset.loader import load_dev, resolve_question
-    from utils.display import print_results
+    # Chạy riêng method này trên MỘT câu hỏi, không cần đổi pipeline.method.
+    # Trình tự chạy nằm ở methods/runner.run_offline() — xem file đó.
+    from methods.runner import run_offline
+    from dataset.loader import load_dev
+    from enums import Method
 
     # --- Chỉnh trực tiếp mấy biến này để test ------------------------------
     DATASET: str | None = None       # None → dùng general.dataset của src/config.py
@@ -60,15 +62,9 @@ if __name__ == "__main__":
         cfg.general.dataset = DATASET
 
     # Lấy câu số 21 của dev.json (câu cần 3 bảng). Đổi số trong [] để test câu khác;
+    # đặt None để lấy câu đầu tiên; hoặc gõ thẳng một chuỗi tự viết.
     QUESTION: str | None = load_dev()[21]["utterance"]
     TOP_N: int = 5                   # số bảng in ra
     # ----------------------------------------------------------------------
 
-    encoder, corpus, embs = prepare(dataset=DATASET)
-    question: str = resolve_question(question=QUESTION)
-
-    retriever = SingleHopRetriever(encoder=encoder)
-    results = retriever.run(
-        question=question, corpus=corpus, schema_embeddings=embs, verbose=False,
-    )
-    print_results(method="Single-hop", question=question, results=results, top_n=TOP_N)
+    run_offline(method=Method.SINGLE_HOP, question=QUESTION, top_n=TOP_N)

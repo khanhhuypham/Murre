@@ -3,7 +3,7 @@
 #
 # Cùng nhóm với methods/single_hop.py và methods/crush.py: cả 3 đều là một
 # retriever với cùng interface run(question, corpus, schema_embeddings, verbose),
-# và đều được build_retriever() (core/factory.py) trả về theo cfg.pipeline.method.
+# và đều được build_retriever() (methods/factory.py) trả về theo cfg.pipeline.method.
 #
 # File này dành cho MỤC ĐÍCH HỌC VÀ DEBUG:
 #   - Toàn bộ pipeline chạy trong 1 lần gọi pipeline.run()
@@ -31,10 +31,10 @@
 # CÁCH CHẠY (Option 1 — Offline/Debug, cần src/config.py → run_option.mode = "offline"):
 #   python -m main            # đặt QUESTION/VERBOSE trong khối __main__ của main.py
 #
-# CHẠY/TEST ĐỘC LẬP (xem khối __main__ ở cuối file):
+# CHẠY/TEST ĐỘC LẬP — chạy đúng method này, khỏi phải đổi pipeline.method:
 #   python -m methods.murre
-#   python -m methods.murre --question "..." --verbose
-#   python -m methods.murre --beam_size 2 --max_hop 1      # chạy nhanh khi debug
+# Không có tham số dòng lệnh: đặt QUESTION / VERBOSE / BEAM_SIZE / MAX_HOP trong
+# khối __main__ ở cuối file. Trình tự chạy dùng chung methods/runner.run_offline().
 # =============================================================================
 
 from dataclasses import dataclass, replace
@@ -365,10 +365,11 @@ class MURREPipeline:
 # ĐIỂM CHẠY ĐỘC LẬP — test riêng method này với 1 câu hỏi
 # =============================================================================
 if __name__ == "__main__":
-    from core.corpus import prepare
-    from core.llm import LLMGenerator
-    from dataset.loader import load_dev, resolve_question
-    from utils.display import print_results
+    # Chạy riêng method này trên MỘT câu hỏi, không cần đổi pipeline.method.
+    # Trình tự chạy nằm ở methods/runner.run_offline() — xem file đó.
+    from methods.runner import run_offline
+    from dataset.loader import load_dev
+    from enums import Method
 
     # --- Chỉnh trực tiếp mấy biến này để test ------------------------------
     DATASET: str | None = None       # None → dùng general.dataset của src/config.py
@@ -376,24 +377,21 @@ if __name__ == "__main__":
         # Phải set TRƯỚC load_dev(), nếu không sẽ đọc dev.json của dataset cũ.
         cfg.general.dataset = DATASET
 
-    # Lấy câu số 21 của dev.json (câu cần 3 bảng — đúng ca multi-hop mà MURRE nhắm tới).
+    # Lấy câu số 21 của dev.json (câu cần 3 bảng — đúng ca multi-hop MURRE nhắm tới).
     QUESTION: str | None = load_dev()[21]["utterance"]
     TOP_N: int = 5
     LLM_PROFILE: str | None = None   # None → dùng llm.active_profile
-    VERBOSE: bool = False            # True: in chi tiết từng hop (Removal, retrieve, early stop)
-    BEAM_SIZE: int | None = None
-    MAX_HOP: int | None = None
+    VERBOSE: bool = False            # True: in chi tiết từng hop (Removal, early stop)
+    BEAM_SIZE: int | None = None     # None → theo pipeline.beam_size
+    MAX_HOP: int | None = None       # None → theo pipeline.max_hop
     # ----------------------------------------------------------------------
 
-    # Ghi đè config TRƯỚC khi khởi tạo pipeline, vì MURREPipeline.__init__ đọc
-    # beam_size/max_hop/ablation từ cfg một lần duy nhất.
+    # Ghi đè config TRƯỚC khi run_offline() dựng pipeline, vì MURREPipeline.__init__
+    # đọc beam_size/max_hop/ablation từ cfg một lần duy nhất.
     if BEAM_SIZE is not None:
         cfg.pipeline.beam_size = BEAM_SIZE
     if MAX_HOP is not None:
         cfg.pipeline.max_hop = MAX_HOP
-
-    encoder, corpus, embs = prepare(dataset=DATASET)
-    question: str = resolve_question(question=QUESTION)
 
     ab = cfg.pipeline.ablation
     print()
@@ -402,14 +400,10 @@ if __name__ == "__main__":
         f"removal={ab.removal}, tabulation={ab.tabulation}, early_stop={ab.early_stop}"
     )
 
-    pipeline = MURREPipeline(
-        encoder=encoder,
-        rewriter=QueryRewriter(llm=LLMGenerator(profile=LLM_PROFILE)),
-    )
-    results = pipeline.run(
-        question=question,
-        corpus=corpus,
-        schema_embeddings=embs,
+    run_offline(
+        method=Method.MURRE,
+        question=QUESTION,
+        top_n=TOP_N,
         verbose=VERBOSE,
+        llm_profile=LLM_PROFILE,
     )
-    print_results(method="MURRE", question=question, results=results, top_n=TOP_N)

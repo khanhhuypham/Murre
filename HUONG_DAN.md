@@ -40,12 +40,14 @@ MURRE/                               ← Thư mục gốc (Working Directory khi
 │   │   ├── encoder.py               ← SGPTEncoder (Bi-Encoder, §3.2.1)
 │   │   ├── llm.py                   ← LLMGenerator (OpenAI-compatible)
 │   │   ├── rewriter.py              ← QueryRewriter (Removal + Tabulation, §3.4)
-│   │   ├── corpus.py                ← prepare(): corpus + embeddings (có cache)
-│   │   └── factory.py               ← build_retriever(): chọn đúng method theo config
-│   ├── methods/                     ← 3 method của Table 2, cùng interface run()
+│   │   └── corpus.py                ← prepare(): corpus + embeddings (có cache)
+│   ├── methods/                     ← 3 method của Table 2 + cách chọn và chạy chúng
 │   │   ├── murre.py                 ← MURREPipeline — method chính (beam search, §3.2/§3.5)
 │   │   ├── single_hop.py            ← Baseline Single-hop (§4.2)
-│   │   └── crush.py                 ← Baseline CRUSH (§4.2, prompt tự suy luận — xem mục 12)
+│   │   ├── crush.py                 ← Baseline CRUSH (§4.2, prompt tự suy luận — xem mục 12)
+│   │   ├── factory.py               ← build_retriever(): chọn đúng method theo config
+│   │   └── runner.py                ← NƠI DUY NHẤT viết cách chạy: run_offline /
+│   │                                  run_pipeline / run_batch_murre / run_batch
 │   ├── steps/                       ← Batch pipeline (Option 2)
 │   │   ├── embed.py                 ← Bước 1: mã hóa corpus
 │   │   ├── retrieve.py              ← Bước 2: dense retrieval mỗi hop
@@ -320,9 +322,9 @@ python -m main
 | `pipeline.method` | Đường chạy | Các bước |
 |---|---|---|
 | `murre` | chuỗi `steps/*.py` | `embed → retrieve(hop0) → [rewrite(hop) → retrieve(hop+1, mỗi beam)] × max_hop → score → infer` |
-| `single_hop` / `crush` | `core/runner.py` | gọi thẳng `methods/*.run()` cho từng câu rồi ghi `result` + `score` |
+| `single_hop` / `crush` | `methods/runner.py` | gọi thẳng `methods/*.run()` cho từng câu rồi ghi `result` + `score` |
 
-2 baseline không có multi-hop nên không dùng được chuỗi `steps/`; `core/runner.py`
+2 baseline không có multi-hop nên không dùng được chuỗi `steps/`; `methods/runner.py`
 chạy chúng trên cả `dev.json` bằng một đường code riêng. Đường này **không sinh SQL**
 (không có bước `infer`) — chỉ MURRE chạy đủ 5 bước.
 
@@ -535,7 +537,7 @@ python src/methods/crush.py
 
 > **Muốn số liệu Table 2/3 cho 2 baseline** thì không dùng khối `__main__` (chỉ 1 câu)
 > mà chạy batch: đặt `pipeline.method` thành `single_hop`/`crush` rồi `python -m main`
-> với `run_option.mode = "batch"`. `core/runner.py` chạy cả `dev.json` và ghi ra
+> với `run_option.mode = "batch"`. `methods/runner.py` chạy cả `dev.json` và ghi ra
 > `result/turn{max_hop}/{dev,score}.json` — đúng file mà `/evaluate` đọc (mục 5).
 
 **Collective retrieval trong CRUSH.** LLM thường hallucinate ra *nhiều* bảng, mỗi bảng

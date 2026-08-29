@@ -15,13 +15,13 @@ from typing import Annotated, Any, Dict, List, Optional, Type, TypeVar
 
 import torch
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 
 from config import cfg
 from core.encoder import SGPTEncoder
-from core.factory import build_retriever
+from methods.factory import build_retriever
 from core.llm import LLMGenerator
-from core.runner import PipelineBusyError, run_pipeline
+from methods.runner import PipelineBusyError, run_pipeline
 from dataset.loader import load_bird_tables, load_spider_tables
 from enums import BaseStrEnum, Dataset, JobStatus, Method, ModelScale
 from models.records import ResultRecord
@@ -163,16 +163,20 @@ async def retrieve_tables(payload: RetrieveRequest) -> List[TableResult]:
 
 
 # =============================================================================
-# /pipeline — CHẠY pipeline cho một tổ hợp (dataset, model, method), cả 3 method
+# /pipeline — CHẠY pipeline cho một tổ hợp (dataset, method), cả 3 method
+#
+# Scale encoder KHÔNG nằm trong API: server lấy từ general.scale (src/config.py).
+# Vì vậy request lẫn response đều không có trường `model` — muốn biết scale nào thì
+# đọc `result.result_file`, đường dẫn có sẵn scale trong đó.
 #
 # /evaluate chỉ ĐỌC metric của lần chạy đã có. Nhóm endpoint này mới là thứ TẠO ra
 # lần chạy đó: nó ghi `paths.result` + `paths.score`, nên chạy xong là /evaluate
 # tra được ngay với mọi k.
 #
-# Chạy pipeline mất từ vài phút (single_hop) tới vài giờ (murre, 658 câu, LLM mỗi
-# hop mỗi beam) — quá lâu cho một HTTP request. Vì vậy POST trả về `job_id` ngay
-# (202) rồi poll GET /pipeline/jobs/{job_id}. Muốn chờ luôn trong một request thì
-# dùng `?wait=true` kèm `limit` nhỏ.
+# Mặc định POST chờ tới khi chạy xong rồi trả kết quả (200). Lần chạy dài hơn
+# timeout của client thì dùng `?wait=false` → trả job ngay (202), poll bằng
+# GET /pipeline/jobs/{job_id}. Đo trên máy này, 658 câu mất khoảng:
+#   single_hop ~2.7 phút | crush ~32 phút | murre (beam 5 × hop 3) ~1.6 giờ
 # =============================================================================
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -189,9 +193,10 @@ def _run_job(job_id: str, req: PipelineRunRequest) -> None:
         job.total = total
 
     try:
+        # Khong truyen scale: giu nguyen general.scale cua server (xem
+        # PipelineRunRequest).
         run_pipeline(
             dataset=req.dataset,
-            scale=req.model,
             method=req.method,
             limit=req.limit,
             on_progress=on_progress,
@@ -199,7 +204,10 @@ def _run_job(job_id: str, req: PipelineRunRequest) -> None:
         # Đọc lại metric bằng đúng đường code của /evaluate → hai endpoint không thể
         # lệch số nhau, và cũng xác nhận file vừa ghi đọc được thật.
         job.result = evaluate_run(
-            dataset=req.dataset, model=req.model, method=req.method, k=req.k
+            dataset=req.dataset,
+            model=ModelScale(cfg.general.scale),
+            method=req.method,
+            k=req.k,
         )
         job.status = JobStatus.SUCCEEDED
     except PipelineBusyError as e:
@@ -219,16 +227,27 @@ def _run_job(job_id: str, req: PipelineRunRequest) -> None:
 @app.post(
     "/pipeline/run",
     response_model=PipelineJob,
-    status_code=202,
+    status_code=200,
     summary="Chạy pipeline (murre | single_hop | crush) rồi tính metric tại k",
 )
 async def pipeline_run(
     payload: PipelineRunRequest,
+    response: Response,
     wait: Annotated[bool, Query(
-        description="true = chờ chạy xong rồi mới trả về (chỉ nên dùng kèm limit nhỏ)",
-    )] = False,
+        description="true (mặc định) = chờ chạy xong rồi trả kết quả luôn → 200. "
+                    "false = trả job ngay để poll /pipeline/jobs/{job_id} → 202; "
+                    "dùng cho lần chạy dài (murre đủ 658 câu mất khoảng 1.6 giờ).",
+    )] = True,
 ) -> PipelineJob:
-    """Khởi động một lần chạy pipeline và trả về job để theo dõi.
+    """Chạy pipeline rồi trả kết quả.
+
+    Mặc định `wait=true`: request giữ mở tới khi chạy xong, response đã có sẵn
+    `result` (metric tại k) — gọi một phát là có luôn.
+
+    Khi nào cần `wait=false`: lần chạy dài hơn timeout của client/proxy. Đo trên
+    máy này (Ollama + qwen2.5:0.5b), chạy đủ 658 câu mất khoảng:
+        single_hop ~2.7 phút | crush ~32 phút | murre (beam 5 × hop 3) ~1.6 giờ
+    Muốn chạy nhanh để thử thì đặt `limit` nhỏ và cứ để mặc định.
 
     `cfg` là biến toàn cục của process nên mỗi lúc chỉ chạy được MỘT job; gọi khi
     đang có job khác sẽ nhận `409`.
@@ -247,7 +266,6 @@ async def pipeline_run(
         job_id=job_id,
         status=JobStatus.QUEUED,
         dataset=payload.dataset,
-        model=payload.model,
         method=payload.method,
         k=payload.k,
         limit=payload.limit,
@@ -258,7 +276,10 @@ async def pipeline_run(
     app.state.job_tasks[job_id] = task
 
     if wait:
-        await task
+        await task          # chạy xong mới trả → job.result đã có metric
+    else:
+        # Chưa chạy xong, chỉ mới nhận việc → 202 Accepted mới đúng ngữ nghĩa.
+        response.status_code = 202
     return job
 
 
@@ -352,7 +373,6 @@ def evaluate_run(
     metrics: Dict[str, Dict[int, float]] = compute_res(top_k=[k], data=data)
     return EvalResult(
         dataset=ds,
-        model=sc,
         method=mt,
         k=k,
         recall=round(metrics["recall"][k] * 100, 2),
@@ -386,24 +406,26 @@ async def evaluate(
 
 @app.get("/evaluate/available", response_model=List[AvailableRun], summary="Các lần chạy đã có kết quả trên máy này")
 async def evaluate_available() -> List[AvailableRun]:
-    """Quét outputs/ để biết tổ hợp (dataset, model, method) nào đã chạy xong."""
+    """Quét outputs/ để biết tổ hợp (dataset, method) nào đã chạy xong.
+
+    Chỉ quét scale hiện tại của server (general.scale), không duyệt cả 4 scale —
+    cùng quy ước với /pipeline/run: scale do server quyết định. Scale thực tế vẫn
+    đọc được từ `result_file`.
+    """
     found: List[AvailableRun] = []
     for ds in Dataset:
         for mt in Method:
-            for sc in ModelScale:
-                f: str = cfg.outputs.for_run(
-                    dataset=ds, scale=sc, method=mt
-                ).result()
-                if not os.path.exists(f):
-                    continue
-                with open(f, "r", encoding="utf-8") as fh:
-                    data = ResultRecord.from_list(items=json.load(fh))
-                found.append(AvailableRun(
-                    dataset=ds,
-                    model=sc,
-                    method=mt,
-                    num_questions=len(data),
-                    retrieved_depth=min((len(d.retrieved) for d in data), default=0),
-                    result_file=f,
-                ))
+            # Không truyền scale → for_run giữ nguyên general.scale của cfg.
+            f: str = cfg.outputs.for_run(dataset=ds, method=mt).result()
+            if not os.path.exists(f):
+                continue
+            with open(f, "r", encoding="utf-8") as fh:
+                data = ResultRecord.from_list(items=json.load(fh))
+            found.append(AvailableRun(
+                dataset=ds,
+                method=mt,
+                num_questions=len(data),
+                retrieved_depth=min((len(d.retrieved) for d in data), default=0),
+                result_file=f,
+            ))
     return found

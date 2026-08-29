@@ -115,9 +115,11 @@ class CrushRetriever:
 # ĐIỂM CHẠY ĐỘC LẬP — test riêng method này với 1 câu hỏi
 # =============================================================================
 if __name__ == "__main__":
-    from core.corpus import prepare
-    from dataset.loader import load_dev, resolve_question
-    from utils.display import print_results
+    # Chạy riêng method này trên MỘT câu hỏi, không cần đổi pipeline.method.
+    # Trình tự chạy nằm ở methods/runner.run_offline() — xem file đó.
+    from methods.runner import run_offline
+    from dataset.loader import load_dev
+    from enums import Method
 
     # --- Chỉnh trực tiếp mấy biến này để test ------------------------------
     DATASET: str | None = None       # None → dùng general.dataset của src/config.py
@@ -125,7 +127,6 @@ if __name__ == "__main__":
         # Phải set TRƯỚC load_dev(), nếu không sẽ đọc dev.json của dataset cũ.
         cfg.general.dataset = DATASET
 
-    # Lấy câu số 21 của dev.json (câu cần 3 bảng). Đổi số trong [] để test câu khác;
     QUESTION: str | None = load_dev()[21]["utterance"]
     TOP_N: int = 5
     LLM_PROFILE: str | None = None   # None → dùng llm.active_profile
@@ -133,21 +134,13 @@ if __name__ == "__main__":
     #                                  False: gộp mọi bảng thành 1 query duy nhất
     # ----------------------------------------------------------------------
 
-    encoder, corpus, embs = prepare(dataset=DATASET)
-    question: str = resolve_question(question=QUESTION)
-
-    retriever = CrushRetriever(
-        encoder=encoder,
-        llm=LLMGenerator(profile=LLM_PROFILE),
-        collective=COLLECTIVE,
+    # verbose=True để CrushRetriever.run() in ra danh sách bảng mà LLM đoán —
+    # chỗ hay sai nhất của CRUSH, xem trước khi đọc bảng kết quả.
+    run_offline(
+        method=Method.CRUSH,
+        question=QUESTION,
+        top_n=TOP_N,
+        verbose=True,
+        llm_profile=LLM_PROFILE,
+        crush_collective=COLLECTIVE,
     )
-    results = retriever.run(
-        question=question, corpus=corpus, schema_embeddings=embs, verbose=False,
-    )
-
-    print()
-    print(f"  LLM hallucinate ({'collective' if COLLECTIVE else 'gộp 1 query'}):")
-    for line in retriever._split_schemas(retriever.last_hallucinated):
-        print(f"    · {line}")
-
-    print_results(method="CRUSH", question=question, results=results, top_n=TOP_N)

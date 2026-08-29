@@ -3,15 +3,19 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from enums import Dataset, Method, ModelScale
+from enums import Dataset, Method
 from pydantic import BaseModel, Field
 
 
 class EvalResult(BaseModel):
-    """Metric THẬT tính từ một lần chạy pipeline trên máy này (không phải số paper)."""
+    """Metric THẬT tính từ một lần chạy pipeline trên máy này (không phải số paper).
+
+    KHÔNG có `model`: scale encoder do server quyết định (general.scale trong
+    src/config.py), client không chọn. Muốn biết scale nào thì đọc `result_file` —
+    đường dẫn có sẵn: outputs/{dataset}/{scale}/{method}/...
+    """
 
     dataset: Dataset = Field(..., description="spider | bird")
-    model: ModelScale = Field(..., description="Scale của SGPT encoder, ví dụ '125m'")
     method: Method = Field(..., description="murre | single_hop | crush")
     k: int = Field(..., description="Số bảng top-đầu dùng để tính metric")
     recall: float = Field(..., description="recall@k (%) — tỉ lệ bảng gold tìm được trong top-k")
@@ -27,10 +31,15 @@ class EvalResult(BaseModel):
 
 
 class AvailableRun(BaseModel):
-    """Một tổ hợp (dataset, model, method) đã có kết quả trên đĩa."""
+    """Một tổ hợp (dataset, method) đã có kết quả trên đĩa.
+
+    KHÔNG có `model`: endpoint chỉ quét scale hiện tại của server (general.scale
+    trong src/config.py), giống /pipeline/run — nên mỗi (dataset, method) chỉ ra
+    đúng một dòng. Muốn biết scale nào thì nhìn `result_file`, đường dẫn có sẵn
+    trong đó: outputs/{dataset}/{scale}/{method}/...
+    """
 
     dataset: Dataset = Field(..., description="spider | bird")
-    model: ModelScale = Field(..., description="Scale của SGPT encoder")
     method: Method = Field(..., description="murre | single_hop | crush")
     num_questions: int = Field(..., description="Số câu hỏi trong file kết quả")
     retrieved_depth: int = Field(..., description="Số bảng đã lưu cho mỗi câu")

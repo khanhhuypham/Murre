@@ -7,20 +7,27 @@ from __future__ import annotations
 
 from typing import Optional
 
-from enums import Dataset, JobStatus, Method, ModelScale
-from pydantic import BaseModel, Field
+from enums import Dataset, JobStatus, Method
+from pydantic import BaseModel, ConfigDict, Field
 
 from schemas.evaluate import EvalResult
 
 
 class PipelineRunRequest(BaseModel):
-    """Body của POST /pipeline/run — 4 tham số chính + limit để chạy thử nhanh."""
+    """Body của POST /pipeline/run — 3 tham số chính + limit để chạy thử nhanh.
+
+    KHÔNG có `model`: scale encoder do server quyết định, lấy từ general.scale trong
+    src/config.py. Lý do: scale phải khớp với encoder.model_name và với cache
+    embeddings đã có sẵn trên máy chủ, để client tự chọn thì dễ sinh ra lần chạy nạp
+    model chưa tải về (SGPT-5.8B ~23GB). Scale thực tế vẫn được báo lại trong
+    PipelineJob.model.
+    """
+
+    # extra="forbid": client cũ còn gửi "model" sẽ nhận 422 kèm tên field sai, thay
+    # vì bị bỏ qua âm thầm rồi tưởng server đã chạy đúng scale mình chọn.
+    model_config = ConfigDict(extra="forbid")
 
     dataset: Dataset = Field(default=Dataset.SPIDER, description="spider | bird")
-    model: ModelScale = Field(
-        default=ModelScale.M_125M,
-        description="Scale encoder SGPT: 125m | 1.3b | 2.7b | 5.8b (nhận cả 'SGPT-125M')",
-    )
     method: Method = Field(
         default=Method.MURRE, description="murre | single_hop | crush"
     )
@@ -35,12 +42,15 @@ class PipelineRunRequest(BaseModel):
 
 
 class PipelineJob(BaseModel):
-    """Trạng thái một lần chạy pipeline."""
+    """Trạng thái một lần chạy pipeline.
+
+    KHÔNG có `model`, giống PipelineRunRequest và EvalResult: scale encoder do
+    server quyết định. Scale thực tế đọc được từ `result.result_file`.
+    """
 
     job_id: str = Field(..., description="Dùng để poll GET /pipeline/jobs/{job_id}")
     status: JobStatus = Field(..., description="queued | running | succeeded | failed")
     dataset: Dataset = Field(..., description="Dataset của lần chạy")
-    model: ModelScale = Field(..., description="Scale encoder của lần chạy")
     method: Method = Field(..., description="Method của lần chạy")
     k: int = Field(..., description="k dùng để báo metric")
     limit: Optional[int] = Field(default=None, description="Số câu giới hạn, None = chạy hết")

@@ -4,10 +4,10 @@
 # Pipeline có ĐÚNG 3 định dạng record, mỗi bước đọc của bước trước rồi ghi ra
 # định dạng tiếp theo:
 #
-#   steps/retrieve.py  ──ghi──>  TurnRecord    (turn{N}/dev*.json)
-#   steps/rewrite.py   ──ghi──>  RewriteRecord (rewrite/outputs/turn{N}/dev.{B}.json)
-#   steps/score.py     ──ghi──>  ResultRecord  (result/turn{H}/dev.json)
-#   core/runner.py     ──ghi──>  ResultRecord  (cùng file, đường Option 1 offline)
+#   steps/retrieve.py   ──ghi──>  TurnRecord    (turn{N}/dev*.json)
+#   steps/rewrite.py    ──ghi──>  RewriteRecord (rewrite/outputs/turn{N}/dev.{B}.json)
+#   steps/score.py      ──ghi──>  ResultRecord  (result/turn{H}/dev.json)
+#   methods/runner.py   ──ghi──>  ResultRecord  (cùng file, đường Option 1 offline)
 #
 # Trước đây cả 3 đều là `List[Dict[str, Any]]`, nên đọc nhầm định dạng chỉ vỡ lúc
 # chạy: `KeyError: 'retrieved'` khi đưa file rewrite vào chỗ đợi file retrieve —
@@ -151,7 +151,7 @@ class ResultRecord:
     3 trường dưới đây là phần hợp đồng thật sự giữa các module.
 
     `extra` giữ nguyên mọi khóa khác của record. Hai đường sinh ra file này ghi số
-    khóa khác nhau — core/runner.py (Option 1) ghi đúng 3 khóa, còn steps/score.py
+    khóa khác nhau — methods/runner.py (Option 1) ghi đúng 3 khóa, còn steps/score.py
     (Option 2) tái sử dụng luôn record của turn0 nên còn kèm input/utterance_org/
     selected_database/recall. Nhờ `extra` mà đọc-rồi-ghi-lại không làm mất khóa nào,
     và thứ tự khóa cũng giữ nguyên như file gốc.

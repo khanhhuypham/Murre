@@ -1,4 +1,4 @@
-"""core/factory.py — Khởi tạo đúng phương pháp retrieval theo cfg.pipeline.method,
+"""methods/factory.py — Khởi tạo đúng phương pháp retrieval theo cfg.pipeline.method,
 để main.py / steps/*.py không phải biết chi tiết từng phương pháp.
 
 Cả 3 retriever có chung một giao diện:
@@ -26,19 +26,25 @@ RetrieverType = Union[MURREPipeline, SingleHopRetriever, CrushRetriever]
 def build_retriever(
     encoder: SGPTEncoder,
     llm: LLMGenerator | None = None,
+    method: Method | None = None,
     crush_collective: bool = True,
 ) -> RetrieverType:
-    """Trả về đúng retriever theo cfg.pipeline.method (xem enum Method).
+    """Trả về đúng retriever theo `method` (xem enum Method).
 
-    crush_collective: chỉ dùng cho Method.CRUSH — xem CrushRetriever.collective.
+    method           : None → đọc cfg.pipeline.method. Truyền thẳng vào để chọn
+                       method mà KHÔNG phải sửa config, cũng không phải tạm ghi đè
+                       cfg — đây là cách methods/{murre,crush,single_hop}.py và
+                       runner.run_offline() dùng.
+    crush_collective : chỉ dùng cho Method.CRUSH — xem CrushRetriever.collective.
     """
-    try:
-        method: Method = Method(cfg.pipeline.method)
-    except ValueError:
-        raise ValueError(
-            f"pipeline.method={cfg.pipeline.method!r} không hợp lệ. "
-            f"Chỉ nhận: {Method.values()}"
-        ) from None
+    if method is None:
+        try:
+            method = Method(cfg.pipeline.method)
+        except ValueError:
+            raise ValueError(
+                f"pipeline.method={cfg.pipeline.method!r} không hợp lệ. "
+                f"Chỉ nhận: {Method.values()}"
+            ) from None
 
     # Lưu ý khi thêm nhánh: LUÔN viết dạng có chấm (Method.MURRE). Viết trống tên
     # (case MURRE) thì Python hiểu là "bắt mọi giá trị rồi gán vào biến MURRE" —

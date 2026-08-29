@@ -7,7 +7,7 @@
 #   RetrievedRow   : một dòng trong mảng "retrieved" của FILE JSON   → (rank, schema, similarity)
 #
 # Trước đây cả hai đều là dict trần (`List[Dict[str, Any]]`), nên chỗ nối giữa hai
-# thế giới phải đổi tên khóa bằng tay — core/runner.py từng có nguyên một comment
+# thế giới phải đổi tên khóa bằng tay — methods/runner.py từng có nguyên một comment
 # giải thích vì sao "score" phải viết ra thành "similarity". Nay việc đó nằm gọn
 # trong RetrievedTable.to_row(), không ai phải nhớ nữa.
 #
@@ -54,7 +54,7 @@ class RetrievedTable(NamedTuple):
     """Một bảng do methods/*.run() trả về — dùng trong bộ nhớ, không ghi thẳng ra file.
 
     Cả 3 method (murre / single_hop / crush) đều trả về List[RetrievedTable]; đây
-    chính là giao diện chung mà core/factory.build_retriever() hứa hẹn.
+    chính là giao diện chung mà methods/factory.build_retriever() hứa hẹn.
     """
 
     # Chuỗi schema "db_id.table(col1, col2, ...)"
