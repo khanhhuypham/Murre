@@ -1,10 +1,14 @@
 # =============================================================================
 # utils/schema.py — Các hàm xử lý schema bảng SQL
 #
-# Gồm 3 nhóm chính:
-#   1. build_schema_corpus()       → tạo danh sách schema cho retrieval
-#   2. pack_table()                → render schema thành CREATE TABLE SQL (dùng cho SQL generation)
-#   3. filter_ret_tables_from_db() → lọc DB dict chỉ giữ các bảng đã retrieve
+# Gồm 3 nhóm, đúng thứ tự xuất hiện bên dưới:
+#   1. build_schema_corpus()       → danh sách schema phẳng cho retrieval
+#      build_db_index()            → {db_id: db_dict} để tra nhanh khi sinh SQL
+#   2. filter_ret_tables_from_db() → lọc DB dict chỉ giữ các bảng đã retrieve
+#   3. pack_table()                → render DB dict thành CREATE TABLE SQL
+#
+# Nhóm 2 và 3 chỉ dùng ở steps/infer.py (bước sinh SQL); nhóm 1 dùng ở cả
+# core/corpus.py và api/dependencies.py.
 #
 # Trung thành với implement của tác giả trong retrieve/utils.py
 # =============================================================================

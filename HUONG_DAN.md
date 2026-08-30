@@ -11,7 +11,7 @@ tabulation, w/o early stop) dùng để tái tạo Table 2, 3 và 4 của paper.
 2. [Đặt data files](#2-đặt-data-files)
 3. [Cấu hình project](#3-cấu-hình-project)
     - [3b. Dùng nhiều model LLM local (Ollama)](#3b-dùng-nhiều-model-llm-local-ollama--chuyển-đổi-nhanh)
-4. [Option 1 — Offline/Debug (1 câu hỏi)](#4-option-1--offlinedebug-1-câu-hỏi)
+4. [Option 1 — One question (1 câu hỏi)](#4-option-1--one-question-1-câu-hỏi)
     - [4b. Test riêng một method](#4b-test-riêng-một-method-python--m-methods)
 5. [Option 2 — Batch (toàn dataset)](#5-option-2--batch-toàn-dataset)
     - [5b. Chạy từng bước riêng lẻ](#5b-chạy-từng-bước-riêng-lẻ-chỉ-khi-method-murre)
@@ -34,8 +34,18 @@ MURRE/                               ← Thư mục gốc (Working Directory khi
 ├── src/                             ← Toàn bộ code (Sources Root)
 │   ├── config.py                    ← Settings + MẶC ĐỊNH của general/pipeline/paths/
 │   │                                  logging/api/run_option (xem mục 3)
-│   ├── main.py
-│   ├── api.py
+│   ├── main.py                      ← Điểm vào pipeline (python -m main)
+│   ├── server.py                    ← Điểm vào API (uvicorn server:app) — mục 8
+│   ├── api/                         ← REST service, không có endpoint ở ngoài
+│   │   ├── app.py                   ← Tạo FastAPI, lifespan, gắn router
+│   │   ├── dependencies.py          ← Nạp lười encoder/LLM/embeddings theo dataset
+│   │   ├── evaluator.py             ← evaluate_run(): tính metric từ file kết quả
+│   │   ├── jobs.py                  ← Thân một job chạy pipeline trong thread riêng
+│   │   └── routers/                 ← Mỗi file một nhóm endpoint
+│   │       ├── health.py            ← /health, /config
+│   │       ├── retrieve.py          ← /retrieve
+│   │       ├── pipeline.py          ← /pipeline/run, /pipeline/jobs
+│   │       └── evaluate.py          ← /evaluate, /evaluate/available
 │   ├── core/                        ← Hạ tầng dùng chung cho MỌI method
 │   │   ├── encoder.py               ← SGPTEncoder (Bi-Encoder, §3.2.1)
 │   │   ├── llm.py                   ← LLMGenerator (OpenAI-compatible)
@@ -46,7 +56,7 @@ MURRE/                               ← Thư mục gốc (Working Directory khi
 │   │   ├── single_hop.py            ← Baseline Single-hop (§4.2)
 │   │   ├── crush.py                 ← Baseline CRUSH (§4.2, prompt tự suy luận — xem mục 12)
 │   │   ├── factory.py               ← build_retriever(): chọn đúng method theo config
-│   │   └── runner.py                ← NƠI DUY NHẤT viết cách chạy: run_offline /
+│   │   └── runner.py                ← NƠI DUY NHẤT viết cách chạy: run_one_question /
 │   │                                  run_pipeline / run_batch_murre / run_batch
 │   ├── steps/                       ← Batch pipeline (Option 2)
 │   │   ├── embed.py                 ← Bước 1: mã hóa corpus
@@ -61,6 +71,7 @@ MURRE/                               ← Thư mục gốc (Working Directory khi
 │   ├── schemas/                     ← Pydantic model cho request/response của API
 │   │   ├── retrieve.py              ← RetrieveRequest, TableResult
 │   │   ├── evaluate.py              ← EvalResult, AvailableRun
+│   │   ├── pipeline.py              ← PipelineRunRequest, PipelineJob
 │   │   └── health.py                ← HealthStatus
 │   ├── utils/
 │   │   ├── schema.py                ← build_schema_corpus, pack_table, filter
@@ -121,25 +132,21 @@ thành **giá trị mặc định ngay trong `src/config.py`** (`GeneralConfig`,
 `PipelineConfig`, `PathsConfig`, `LoggingConfig`, `ApiConfig`, `RunOptionConfig`) —
 đổi tham số nghĩa là sửa giá trị mặc định của field tương ứng trong class đó.
 
-> **Vẫn dùng lại được YAML bất cứ lúc nào.** `Settings` đọc `config.yaml` rồi ghi đè
-> lên mặc định trong code, nên thêm lại section vào `config.yaml` (ví dụ dán lại cả
-> khối `pipeline:`) là section đó thắng, không cần sửa `src/config.py`. Cách này tiện
-> khi muốn giữ nhiều cấu hình song song qua biến môi trường `MURRE_CONFIG_PATH`.
 
 Các tham số quan trọng nhất:
 
 | Tham số | Mặc định | Sửa ở | Ý nghĩa |
 |---|---|---|---|
 | `general.dataset` | `spider` | `GeneralConfig` (config.py) | `spider` hoặc `bird` |
-| `general.scale` | `125m` | `GeneralConfig` (config.py) | `125m` \| `1.3b` \| `2.7b` \| `5.8b` |
+| `general.scale` | `125m` | `GeneralConfig` (config.py) | **Nhãn** thư mục `outputs/` — chuỗi tự do, không nạp model nào |
 | `pipeline.method` | `murre` | `PipelineConfig` (config.py) | `murre` \| `single_hop` \| `crush` — chọn phương pháp retrieval |
 | `pipeline.beam_size` | `5` | `PipelineConfig` (config.py) | B trong paper |
 | `pipeline.max_hop` | `3` | `PipelineConfig` (config.py) | H trong paper |
 | `pipeline.ablation.removal` | `True` | `AblationConfig` (config.py) | `False` = "w/o removal" (Table 4) |
 | `pipeline.ablation.tabulation` | `True` | `AblationConfig` (config.py) | `False` = "w/o tabulation" (Table 4) |
 | `pipeline.ablation.early_stop` | `True` | `AblationConfig` (config.py) | `False` = "w/o early stop" (Table 4) |
-| `run_option.mode` | `offline` | `RunOptionConfig` (config.py) | `offline` (Option 1) hoặc `batch` (Option 2) |
-| `encoder.model_name` | SGPT-125M | `config.yaml` | PHẢI khớp `general.scale` |
+| `run_option.mode` | `batch` | `RunOptionConfig` (config.py) | `one_question` (Option 1) hoặc `batch` (Option 2) |
+| `encoder.model_name` | SGPT-125M | `config.yaml` | Model THẬT được nạp. Đổi cái này thì đổi luôn `general.scale`, không thì kết quả 2 model ghi đè nhau |
 | `encoder.batch_size` | `256` | `config.yaml` | Giảm nếu hết RAM |
 | `llm.active_profile` | `qwen2.5-0.5b` | `config.yaml` | Xem mục 3b |
 
@@ -184,7 +191,7 @@ Xem nhanh các profile đã khai báo:
 python -m config --llm
 ```
 
-Đổi model cho **cả project** (batch, offline, API): sửa `llm.active_profile` trong
+Đổi model cho **cả project** (batch, one_question, API): sửa `llm.active_profile` trong
 `config.yaml`.
 
 Đổi model **tạm thời chỉ cho 1 lần chạy Option 1** (không cần sửa config.yaml): đặt
@@ -204,14 +211,17 @@ llm_b = LLMGenerator(profile="qwen2.5-14b")
 Mỗi model mới pull về qua Ollama (`ollama pull <model>`), chỉ cần thêm 1 khối
 profile mới trong `config.yaml` — không cần sửa code.
 
-## 4. Option 1 — Offline/Debug (1 câu hỏi)
+## 4. Option 1 — One question (1 câu hỏi)
 
 Trong `src/config.py`, class `RunOptionConfig`:
 
 ```python
 class RunOptionConfig(BaseModel):
-    mode: str = "offline"      # ← Option 1
+    mode: str = "one_question"      # ← Option 1 (mặc định là "batch")
 ```
+
+Option 1 chạy **một** câu hỏi trong process này rồi in top-N bảng ra terminal —
+không ghi file nào. Muốn số liệu ghi ra `outputs/` thì dùng Option 2 (mục 5).
 
 `src/main.py` **không nhận tham số dòng lệnh** — sửa thẳng mấy biến HOA trong khối
 `__main__` ở cuối file (cùng kiểu với `methods/murre.py`), rồi:
@@ -585,23 +595,40 @@ class AblationConfig(BaseModel):
 
 **Lưu ý:** đường dẫn output không phân biệt theo cờ ablation (chỉ phân biệt theo
 `method`) — nếu muốn giữ kết quả của nhiều lần chạy ablation khác nhau, đổi tạm
-`general.scale` trong `GeneralConfig` (ví dụ `"125m-no-removal"`) trước khi chạy,
-hoặc backup thư mục `outputs/` sau mỗi lần.
+`general.scale` (ví dụ `"125m-no-removal"`) trước khi chạy, hoặc backup thư mục
+`outputs/` sau mỗi lần.
+
+`scale` là chuỗi tự do nên không phải khai báo ở đâu cả — đặt xong chạy luôn, và
+`/evaluate?model=125m-no-removal` tra lại được ngay.
 
 ## 8. Chạy API Service
 
 ```bash
-cd src && uvicorn api:app --host 0.0.0.0 --port 8000 --reload
+cd src && uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ```
-Xem docs tại `http://localhost:8000/docs`.
+Xem docs tại `http://localhost:8000/docs`. Không cần `--reload` thì chạy thẳng
+`cd src && python -m server` (sửa host/port trong khối `__main__` của
+`src/server.py`, cùng kiểu với `main.py`).
+
+**Phải đứng trong `src/`.** `config.py` gọi `os.chdir(PROJECT_ROOT)` lúc import, nên
+thư mục lúc KHỞI ĐỘNG mới là thứ quyết định `sys.path`; chạy từ gốc project sẽ nhận
+`ModuleNotFoundError: No module named 'server'`.
+
+`server.py` chỉ có đúng một dòng `from api.app import app` — mọi endpoint nằm trong
+`src/api/`. Thư mục `api/` là namespace package (không có `__init__.py`, giống
+`core/`, `methods/`, `schemas/`, `utils/`) nên uvicorn cần một module phẳng như
+`server.py` để nạp, thay vì trỏ thẳng vào package.
 
 | Endpoint | Việc |
 |---|---|
 | `POST /retrieve` | Retrieve bảng cho 1 câu hỏi, dùng đúng `pipeline.method` đang cấu hình |
 | `GET /health` | Trạng thái service + dataset đã nạp |
 | `GET /config` | Toàn bộ cấu hình đang hiệu lực (`config.yaml` + mặc định trong `src/config.py`) |
-| `GET /evaluate` | **Tính recall@k / complete_recall@k thật** của lần chạy (xem dưới) |
+| `GET /evaluate` | **Tính recall@k / complete_recall@k thật** của lần chạy (xem 8b) |
 | `GET /evaluate/available` | Liệt kê tổ hợp (dataset, model, method) đã có kết quả |
+| `POST /pipeline/run` | **Chạy** pipeline rồi tính metric tại k (xem 8c) |
+| `GET /pipeline/jobs` | Danh sách job đã tạo từ khi service khởi động |
+| `GET /pipeline/jobs/{job_id}` | Trạng thái / tiến độ một lần chạy |
 
 **Service nạp lười (lazy).** Khởi động KHÔNG encode corpus nào — vì các endpoint tra
 cứu số liệu không cần model. Encoder/LLM/embeddings chỉ được nạp ở lần gọi
@@ -626,7 +653,7 @@ hiện trong `general.top_k`.
 | Tham số | Mặc định | Giá trị |
 |---|---|---|
 | `dataset` | `spider` | `spider`, `bird` |
-| `model` | `125m` | `125m`, `1.3b`, `2.7b`, `5.8b` (nhận cả `SGPT-125M`) |
+| `model` | `general.scale` của server | Tên thư mục scale trong `outputs/` — chuỗi tự do (nhận cả `SGPT-125M`) |
 | `method` | `murre` | `murre`, `single_hop`, `crush` |
 | `k` | `5` | Một hoặc nhiều: `?k=3&k=5&k=10` |
 
@@ -662,12 +689,70 @@ Các trường hợp lỗi:
 | Chưa chạy tổ hợp đó | `404` | Kèm luôn lệnh cần chạy trước |
 | `k` > `retrieved_depth` | `400` | Chặn để không trả về `0.0` sai lệch âm thầm |
 | `dataset`/`method` sai | `400` | Kèm danh sách giá trị hợp lệ |
+| `model` (scale) sai | `404` | Kèm đường dẫn đã tìm + các scale đang có trên đĩa |
 
-Hàm `evaluate_run(dataset, model, method, k)` trong `src/api.py` dùng được trực tiếp
-trong script Python, không cần chạy API.
+### 8c. `POST /pipeline/run` — CHẠY pipeline qua API
+
+`/evaluate` chỉ ĐỌC metric của lần chạy đã có. Endpoint này mới là thứ TẠO ra lần
+chạy đó: nó ghi `paths.result` + `paths.score`, chạy xong là `/evaluate` tra được
+ngay với mọi k. Tương đương `run_batch` trong `main.py`, nhưng gọi được qua HTTP.
+
+Body (`PipelineRunRequest`) — **không có `model`**: scale encoder do server quyết
+định, lấy từ `general.scale`. Gửi thừa field sẽ nhận `422` (`extra="forbid"`).
+
+| Trường | Mặc định | Ý nghĩa |
+|---|---|---|
+| `dataset` | `spider` | `spider`, `bird` |
+| `method` | `murre` | `murre`, `single_hop`, `crush` |
+| `k` | `5` | k dùng để báo recall sau khi chạy xong |
+| `limit` | `null` | Chỉ chạy N câu đầu của `dev.json` (bỏ trống = chạy hết) |
+
+Query `?wait=` quyết định cách trả kết quả:
+
+| `wait` | Mã | Hành vi |
+|---|---|---|
+| `true` (mặc định) | `200` | Giữ request tới khi chạy xong, response đã có sẵn `result` |
+| `false` | `202` | Trả job ngay, tự poll `GET /pipeline/jobs/{job_id}` |
+
+```bash
+# chạy thử nhanh 20 câu, chờ tới khi xong
+curl -X POST "http://localhost:8000/pipeline/run"      -H "Content-Type: application/json"      -d '{"dataset":"spider","method":"single_hop","k":5,"limit":20}'
+
+# lần chạy dài — trả job ngay rồi poll
+curl -X POST "http://localhost:8000/pipeline/run?wait=false"      -H "Content-Type: application/json"      -d '{"dataset":"spider","method":"murre","k":5}'
+curl "http://localhost:8000/pipeline/jobs/<job_id>"
+```
+
+`PipelineJob` có `status` (`queued` / `running` / `succeeded` / `failed`),
+tiến độ `processed`/`total`, `started_at`/`finished_at`, và `result` (chính là
+`EvalResult` ở 8b) khi `status=succeeded` — hoặc `error` khi `failed`.
+
+Hai lưu ý:
+
+- **Mỗi lúc chỉ chạy được MỘT job.** `cfg` là biến toàn cục của process, nên gọi
+  khi đang có job chưa kết thúc sẽ nhận `409` kèm danh sách job đang chạy.
+- **Job chỉ nằm trong RAM** — restart service là mất danh sách job. Kết quả thì đã
+  ghi ra đĩa, tra lại bằng `/evaluate` hoặc `/evaluate/available`.
+
+Thời gian chạy đủ 658 câu, đo trên máy này (Ollama + `qwen2.5:0.5b`):
+`single_hop` ~2.7 phút | `crush` ~32 phút | `murre` (beam 5 × hop 3) ~1.6 giờ.
+Vì vậy `wait=true` chỉ hợp lý khi có `limit` nhỏ.
+
+Hàm `evaluate_run(dataset, model, method, k)` trong `src/api/evaluator.py` dùng được
+trực tiếp trong script Python, không cần chạy API (`from api.evaluator import evaluate_run`).
+
+`src/api/` chia theo vai trò: `routers/*.py` chỉ khai báo endpoint và chuyển tiếp,
+phần làm việc thật nằm ở `dependencies.py` (nạp model), `evaluator.py` (tính metric),
+`jobs.py` (chạy pipeline nền). Thêm nhóm endpoint mới thì tạo file trong `routers/`
+rồi `include_router` trong `api/app.py`.
+
+Trạng thái dùng chung (encoder, LLM, dataset đã nạp, danh sách job) nằm trong
+`app.state`, khởi tạo ở `api/app.py::lifespan`; router lấy qua `request.app.state`
+nên không file nào phải import ngược lại `app`.
 
 Model request/response của API nằm riêng trong `src/schemas/` (`retrieve.py`,
-`evaluate.py`, `health.py`) — `api.py` chỉ giữ routing và logic, không định nghĩa
+`evaluate.py`, `pipeline.py`, `health.py`) — `src/api/` chỉ giữ routing và logic,
+không định nghĩa
 model. Sửa/thêm field thì sửa trong `src/schemas/`, phần `/docs` và `openapi.json`
 tự cập nhật theo.
 

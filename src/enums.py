@@ -1,12 +1,15 @@
 """enums.py — Các tập giá trị hợp lệ của project, dùng thay cho chuỗi trần.
 
 Cách dùng:
-    from enums import Dataset, Method, ModelScale
+    from enums import Dataset, Method
 
     Dataset("spider")        → Dataset.SPIDER
     Dataset("SPIDER")        → Dataset.SPIDER      (không phân biệt hoa/thường)
-    ModelScale("SGPT-125M")  → ModelScale.M_125M   (chấp nhận cả tiền tố 'sgpt-')
     Dataset("mysql")         → ValueError
+
+Scale encoder KHÔNG có enum ở đây, và cũng không có danh sách hợp lệ ở đâu cả:
+`general.scale` chỉ là NHÃN thư mục outputs/, chuỗi tự do. Model thật sự nạp lên
+là `encoder.model_name` trong config.yaml.
 
 Vì kế thừa `str`, mọi member vẫn dùng được như chuỗi (`f"dataset/{ds}/..."`,
 so sánh với `"spider"`, FastAPI/Pydantic serialize ra đúng giá trị JSON), nên
@@ -47,7 +50,6 @@ class BaseStrEnum(str, Enum):
 
 class Dataset(BaseStrEnum):
     """Dataset text-to-SQL được hỗ trợ (khớp `general.dataset` trong src/config.py)."""
-
     SPIDER = "spider"
     BIRD = "bird"
 
@@ -63,37 +65,6 @@ class Method(BaseStrEnum):
     def needs_llm(self) -> bool:
         """MURRE cần LLM cho pha Removal, CRUSH cần để hallucinate schema."""
         return self in (Method.MURRE, Method.CRUSH)
-
-
-class ModelScale(BaseStrEnum):
-    """Kích thước SGPT encoder (khớp `general.scale` trong src/config.py).
-
-    Chấp nhận thêm tên gọi thân thiện dạng 'SGPT-125M' / 'sgpt-1.3b'.
-    """
-
-    M_125M = "125m"
-    B_1_3 = "1.3b"
-    B_2_7 = "2.7b"
-    B_5_8 = "5.8b"
-
-    @property
-    def model_name(self) -> str:
-        """Tên model HuggingFace tương ứng (khớp `encoder.model_name` trong config.yaml).
-
-        Đổi `general.scale` mà quên đổi `encoder.model_name` là nạp vector của model
-        khác → kết quả sai. Giữ cặp này cạnh nhau để không lệch được.
-        """
-        return f"Muennighoff/SGPT-{self.value.upper()}-weightedmean-msmarco-specb-bitfit"
-
-    @classmethod
-    def _missing_(cls, value: object) -> Optional["ModelScale"]:
-        if not isinstance(value, str):
-            return None
-        normalized: str = value.strip().lower().removeprefix("sgpt-")
-        for member in cls:
-            if member.value == normalized:
-                return member
-        return None
 
 
 class JobStatus(BaseStrEnum):

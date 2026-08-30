@@ -28,13 +28,13 @@
 #   tabulation False → xử lý bên trong QueryRewriter (chọn prompt tương ứng)
 #   early_stop False → không bao giờ dừng sớm, luôn chạy hết max_hop
 #
-# CÁCH CHẠY (Option 1 — Offline/Debug, cần src/config.py → run_option.mode = "offline"):
+# CÁCH CHẠY (Option 1 — một câu hỏi, cần src/config.py → run_option.mode = "one_question"):
 #   python -m main            # đặt QUESTION/VERBOSE trong khối __main__ của main.py
 #
 # CHẠY/TEST ĐỘC LẬP — chạy đúng method này, khỏi phải đổi pipeline.method:
 #   python -m methods.murre
 # Không có tham số dòng lệnh: đặt QUESTION / VERBOSE / BEAM_SIZE / MAX_HOP trong
-# khối __main__ ở cuối file. Trình tự chạy dùng chung methods/runner.run_offline().
+# khối __main__ ở cuối file. Trình tự chạy dùng chung methods/runner.run_one_question().
 # =============================================================================
 
 from dataclasses import dataclass, replace
@@ -205,11 +205,11 @@ class MURREPipeline:
     # --------------------------------------------------------------------------
 
     def run(
-            self,
-            question: str,
-            corpus: List[str],
-            schema_embeddings: torch.Tensor,
-            verbose: bool = False,
+        self,
+        question: str,
+        corpus: List[str],
+        schema_embeddings: torch.Tensor,
+        verbose: bool = False,
     ) -> List[RetrievedTable]:
         """
         Chạy toàn bộ thuật toán MURRE multi-hop beam search.
@@ -366,8 +366,8 @@ class MURREPipeline:
 # =============================================================================
 if __name__ == "__main__":
     # Chạy riêng method này trên MỘT câu hỏi, không cần đổi pipeline.method.
-    # Trình tự chạy nằm ở methods/runner.run_offline() — xem file đó.
-    from methods.runner import run_offline
+    # Trình tự chạy nằm ở methods/runner.run_one_question() — xem file đó.
+    from methods.runner import run_one_question
     from dataset.loader import load_dev
     from enums import Method
 
@@ -386,7 +386,7 @@ if __name__ == "__main__":
     MAX_HOP: int | None = None       # None → theo pipeline.max_hop
     # ----------------------------------------------------------------------
 
-    # Ghi đè config TRƯỚC khi run_offline() dựng pipeline, vì MURREPipeline.__init__
+    # Ghi đè config TRƯỚC khi run_one_question() dựng pipeline, vì MURREPipeline.__init__
     # đọc beam_size/max_hop/ablation từ cfg một lần duy nhất.
     if BEAM_SIZE is not None:
         cfg.pipeline.beam_size = BEAM_SIZE
@@ -400,7 +400,7 @@ if __name__ == "__main__":
         f"removal={ab.removal}, tabulation={ab.tabulation}, early_stop={ab.early_stop}"
     )
 
-    run_offline(
+    run_one_question(
         method=Method.MURRE,
         question=QUESTION,
         top_n=TOP_N,

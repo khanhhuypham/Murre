@@ -1,30 +1,19 @@
 # src/config.py
 """Nạp và validate cấu hình từ config.yaml.
 
-Cấu hình của project chia làm hai chỗ:
-
-  * `config.yaml` ở gốc project — encoder SGPT và LLM.
-  * Chính file này — giá trị mặc định của `general`, `pipeline`, `paths`,
-    `logging`, `api`, `run_option` (xem các class *Config bên dưới).
-
-Section nào có trong config.yaml thì ghi đè mặc định tương ứng ở đây, nên vẫn có
-thể chuyển một section về lại file YAML bất cứ lúc nào mà không sửa code.
-
-Cách dùng ở nơi khác trong project:
+Mặc định của MỌI section nằm ngay trong file này (các class *Config bên dưới).
+Section nào có trong config.yaml thì ghi đè mặc định tương ứng — trừ `llm`, bắt
+buộc phải khai trong config.yaml. Trỏ file khác qua env `MURRE_CONFIG_PATH`.
 
     from config import cfg
 
-    print(cfg.pipeline.method)                 # "murre"
-    print(cfg.general.top_k)                   # [3, 5, 10, 20]
-    cfg.dataset_paths.tables                   # dataset/spider/tables.json
-    cfg.outputs.result()                       # outputs/spider/125m/murre/result/turn3/dev.json
-    cfg.outputs.turn_n(hop=1, beam=2)          # outputs/spider/125m/murre/turn1/dev.2.json
+    cfg.pipeline.method                # "murre"
+    cfg.dataset_paths.tables           # dataset/spider/tables.json
+    cfg.outputs.result()               # outputs/spider/125m/murre/result/turn3/dev.json
+    cfg.outputs.turn_n(hop=1, beam=2)  # outputs/spider/125m/murre/turn1/dev.2.json
 
-Có thể trỏ tới file config khác bằng biến môi trường `MURRE_CONFIG_PATH`, hữu ích
-khi chạy nhiều cấu hình song song (vd. thử nghiệm/production).
-
-Ba giá trị hay đổi theo từng máy được .env ghi đè lên config.yaml, xem
-`_apply_env_overrides()`: `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `ENCODER_MODEL_NAME`.
+.env ghi đè 3 giá trị đổi theo máy: OPENAI_API_KEY, OPENAI_BASE_URL,
+ENCODER_MODEL_NAME (xem _apply_env_overrides).
 """
 
 from __future__ import annotations
@@ -40,21 +29,13 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field
 
-# ---------------------------------------------------------------------------
-# Neo thư mục làm việc về GỐC PROJECT (nơi chứa config.yaml)
-#
-# File này nằm ở src/config.py → gốc project = thư mục cha của src/.
-# Mọi đường dẫn trong cấu hình (outputs/, dataset/, prompts/) đều tương đối
-# so với gốc project, nên ta chuyển cwd về gốc ngay khi import config. Nhờ vậy
-# lệnh chạy đúng dù được gọi từ bất kỳ đâu (PyCharm right-click Run, terminal
-# trong src/steps/, v.v.) — không còn lỗi "Không tìm thấy config.yaml".
-# ---------------------------------------------------------------------------
+# Mọi đường dẫn trong config đều tương đối so với gốc project, nên chdir về gốc
+# ngay khi import → chạy từ đâu cũng đúng (PyCharm, terminal trong src/steps/...).
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH: Path = PROJECT_ROOT / "config.yaml"
 
 os.chdir(PROJECT_ROOT)
 
-# Tải biến môi trường từ file .env (nếu có) — đọc từ gốc project sau khi chdir
 load_dotenv()
 
 
@@ -62,35 +43,32 @@ load_dotenv()
 # Các schema con (map 1-1 với từng section trong config.yaml)
 # ---------------------------------------------------------------------------
 class GeneralConfig(BaseModel):
-    """Tham số chung — đặt NGAY TẠI ĐÂY, không khai báo trong config.yaml.
-
-    Thêm lại section `general:` vào config.yaml thì section đó ghi đè các mặc định này.
-    """
     dataset: str = "spider"  # spider | bird
-    # Model càng lớn → kết quả càng tốt nhưng cần RAM nhiều hơn
-    scale: str = "125m"  # 125m | 1.3b | 2.7b | 5.8b
-    # Số lượng top-K bảng để đánh giá recall — Table 2/3 của paper báo cáo tại 3, 5, 10, 20
-    top_k: List[int] = [3, 5, 10, 20]
-    random_seed: int = 42  # seed ngẫu nhiên để tái hiện kết quả
+    # NHÃN thư mục outputs/{dataset}/{scale}/... — chuỗi tự do, KHÔNG nạp model nào.
+    # Model thật là encoder.model_name. Đặt tên riêng được, vd "125m-no-removal".
+    scale: str = "125m"
+    top_k: List[int] = [3, 5, 10, 20]  # các k để tính recall (paper báo cáo 4 mức này)
+    random_seed: int = 42
+
 
 class EncoderConfig(BaseModel):
-    # `model_` là namespace pydantic giữ riêng cho chính nó; tắt để dùng được tên
-    # field `model_name` khớp với config.yaml mà không sinh UserWarning.
+    # Tắt namespace `model_` của pydantic để dùng được tên field `model_name`.
     model_config = ConfigDict(protected_namespaces=())
 
-    # PHẢI khớp general.scale — lệch nhau là nạp vector của model khác → kết quả sai.
+    # Model THỰC SỰ nạp lên. Đổi model thì nhớ đổi luôn general.scale, không thì
+    # kết quả của hai model ghi đè nhau trong cùng thư mục.
     model_name: str = "Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit"
     batch_size: int = 256
 
 
 class LLMProfileConfig(BaseModel):
-    """Một model/endpoint LLM (OpenAI, Groq, Ollama...) khai báo trong llm.profiles."""
+    """Một model/endpoint LLM (OpenAI, Groq, Ollama...) khai trong llm.profiles."""
 
     model_config = ConfigDict(protected_namespaces=())
 
     model_name: str
-    api_key: str = ""  # để trống → điền qua .env: OPENAI_API_KEY
-    base_url: str = ""  # để trống → endpoint OpenAI mặc định
+    api_key: str = ""  # trống → điền qua .env: OPENAI_API_KEY
+    base_url: str = ""  # trống → endpoint OpenAI mặc định
     temperature: float = 0.0
 
 
@@ -100,31 +78,18 @@ class LLMConfig(BaseModel):
 
 
 class AblationConfig(BaseModel):
-    """Ba cờ ablation của paper (Table 4, §4.3) — đặt false để tắt từng thành phần."""
-
-    # false = "w/o removal": nối (splice) câu hỏi + bảng đã tìm, thay vì Removal
-    removal: bool = True
-    # false = "w/o tabulation": Removal trả về câu hỏi tự nhiên, không ép sang dạng schema
-    tabulation: bool = True
-    # false = "w/o early stop": luôn chạy đủ max_hop, không cho phép dừng sớm
-    early_stop: bool = True
+    """Ba cờ ablation của paper (Table 4, §4.3) — false để tắt từng thành phần."""
+    removal: bool = True     # false = nối câu hỏi + bảng đã tìm, thay vì Removal
+    tabulation: bool = True  # false = Removal trả câu tự nhiên, không ép sang dạng schema
+    early_stop: bool = True  # false = luôn chạy đủ max_hop
 
 
 class PipelineConfig(BaseModel):
-    """Pipeline MURRE — đặt NGAY TẠI ĐÂY, không khai báo trong config.yaml.
-
-    Thêm lại section `pipeline:` vào config.yaml thì section đó ghi đè các mặc định này.
-    """
-    method: str = "murre"  # murre | single_hop | crush — Bảng 2/3 của paper
-    # Số beam duy trì tại mỗi hop (bài báo: 5). Tăng → kết quả tốt hơn nhưng tốn
-    # API call hơn.
-    beam_size: int = 5
+    method: str = "murre"  # murre | single_hop | crush
+    beam_size: int = 5     # paper dùng 5. Tăng → tốt hơn nhưng tốn API call hơn
     max_hop: int = 3
-    # Số bảng tối đa lấy từ corpus tại mỗi hop để thu hẹp không gian tìm kiếm.
-    # Hop 1+ chỉ search trong top_k_pool kết quả của hop 0.
-    top_k_pool: int = 100
-    # Số bảng đầu ra cuối cùng để truyền vào bước sinh SQL
-    top_n_output: int = 5
+    top_k_pool: int = 100  # hop 1+ chỉ search trong top_k_pool kết quả của hop 0
+    top_n_output: int = 5  # số bảng truyền vào bước sinh SQL
     ablation: AblationConfig = Field(default_factory=AblationConfig)
 
 
@@ -140,11 +105,8 @@ class DatasetPathsConfig(BaseModel):
 
     @classmethod
     def for_dataset(cls, name: str) -> "DatasetPathsConfig":
-        """Dựng đủ 6 đường dẫn theo quy ước đặt tên chung của spider và bird.
-
-        Thêm dataset thứ ba chỉ cần đặt file đúng quy ước này rồi khai báo thêm một
-        field trong PathsConfig — không phải gõ lại từng đường dẫn.
-        """
+        """Dựng đủ 6 đường dẫn theo quy ước chung — thêm dataset mới chỉ cần đặt
+        file đúng quy ước rồi thêm 1 field trong PathsConfig."""
         return cls(
             tables=f"dataset/{name}/tables.json",
             dev=f"dataset/{name}/dev.json",
@@ -156,11 +118,6 @@ class DatasetPathsConfig(BaseModel):
 
 
 class PathsConfig(BaseModel):
-    """Đường dẫn file — đặt NGAY TẠI ĐÂY, không khai báo trong config.yaml.
-
-    Thêm lại section `paths:` vào config.yaml thì section đó ghi đè các mặc định này.
-    """
-
     # --- Dữ liệu đầu vào ---
     spider: DatasetPathsConfig = Field(
         default_factory=lambda: DatasetPathsConfig.for_dataset("spider")
@@ -170,12 +127,8 @@ class PathsConfig(BaseModel):
     )
 
     # --- File trung gian và đầu ra ---
-    # Đây là TEMPLATE còn nguyên {placeholder}; đường dẫn thật lấy qua cfg.outputs.*()
-    # — {dataset}, {scale}, {method}, {max_hop} điền theo general.* / pipeline.*, còn
-    # {hop}, {beam}, {k} do chỗ gọi truyền vào.
-    # Cache embeddings — MỘT định dạng duy nhất (.pt), dùng chung cho Option 1,
-    # Option 2 và API. Trước đây còn thêm embeddings.json theo format của tác giả:
-    # cùng bộ vector nhưng lưu 2 nơi, encode 2 lần, nên đã bỏ.
+    # TEMPLATE còn nguyên {placeholder}; đường dẫn thật lấy qua cfg.outputs.*().
+    # {dataset} {scale} {method} {max_hop} điền từ cfg; {hop} {beam} {k} do chỗ gọi truyền.
     embeddings_cache: str = "outputs/{dataset}_{scale}_embeddings.pt"
     turn0: str = "outputs/{dataset}/{scale}/{method}/turn0/dev.json"
     rewrite_output: str = "outputs/{dataset}/{scale}/{method}/rewrite/outputs/turn{hop}"
@@ -186,18 +139,17 @@ class PathsConfig(BaseModel):
 
 
 class OutputPaths:
-    """Đường dẫn file trung gian & đầu ra ĐÃ ĐIỀN SẴN tham số — lấy qua `cfg.outputs`.
+    """Đường dẫn đầu ra ĐÃ ĐIỀN SẴN tham số — lấy qua `cfg.outputs`.
 
-    Mỗi template trong PathsConfig có đúng một method ở đây, thay cho việc tra bằng
-    key dạng chuỗi: IDE gợi ý được tên, Ctrl+click nhảy tới method rồi tới template,
-    và placeholder bắt buộc (hop/beam/k) là tham số THẬT — gõ thiếu hay gõ sai là biết
-    ngay lúc viết code, không phải KeyError lúc chạy.
+    Mỗi template trong PathsConfig có đúng một method ở đây: IDE gợi ý được tên, và
+    placeholder bắt buộc (hop/beam/k) là tham số THẬT nên gõ thiếu là biết ngay lúc
+    viết code, không phải KeyError lúc chạy.
 
         cfg.outputs.result()               → outputs/spider/125m/murre/result/turn3/dev.json
         cfg.outputs.turn_n(hop=1, beam=2)  → outputs/spider/125m/murre/turn1/dev.2.json
 
-    Cần đường dẫn của MỘT lần chạy khác mà không ghi đè `cfg` toàn cục thì dùng
-    for_run() — /evaluate làm đúng như vậy:
+    Cần đường dẫn của lần chạy KHÁC mà không ghi đè `cfg` toàn cục thì dùng for_run()
+    — /evaluate làm đúng vậy:
 
         cfg.outputs.for_run(dataset="bird", scale="1.3b", method="crush").result()
     """
@@ -239,41 +191,28 @@ class OutputPaths:
 
     # --- Một method cho mỗi template trong PathsConfig ------------------------
     def embeddings_cache(self) -> str:
-        """outputs/{dataset}_{scale}_embeddings.pt"""
         return self._render(self._settings.paths.embeddings_cache)
 
     def turn0(self) -> str:
-        """outputs/{dataset}/{scale}/{method}/turn0/dev.json"""
         return self._render(self._settings.paths.turn0)
 
     def rewrite_output(self, hop: int) -> str:
-        """outputs/{dataset}/{scale}/{method}/rewrite/outputs/turn{hop}"""
         return self._render(self._settings.paths.rewrite_output, hop=hop)
 
     def turn_n(self, hop: int, beam: int) -> str:
-        """outputs/{dataset}/{scale}/{method}/turn{hop}/dev.{beam}.json"""
         return self._render(self._settings.paths.turn_n, hop=hop, beam=beam)
 
     def result(self) -> str:
-        """outputs/{dataset}/{scale}/{method}/result/turn{max_hop}/dev.json"""
         return self._render(self._settings.paths.result)
 
     def score(self) -> str:
-        """outputs/{dataset}/{scale}/{method}/result/turn{max_hop}/score.json"""
         return self._render(self._settings.paths.score)
 
     def sql(self, k: int) -> str:
-        """outputs/{dataset}/{scale}/{method}/result/turn{max_hop}/sql.{k}.txt"""
         return self._render(self._settings.paths.sql, k=k)
 
 
 class LoggingConfig(BaseModel):
-    """Cấu hình logging — đặt NGAY TẠI ĐÂY, không khai báo trong config.yaml.
-
-    Đổi mức log hay bật/tắt ghi file thì sửa giá trị mặc định bên dưới. Section
-    `logging:` vẫn được chấp nhận nếu bạn thêm lại vào config.yaml — khi đó nó ghi
-    đè các mặc định này (xem utils/logger.py để biết cách đọc).
-    """
     level: str = "DEBUG"  # DEBUG | INFO | WARNING | ERROR
     log_to_file: bool = True  # true = ghi thêm ra file (append), vẫn in ra console
     log_dir: str = "outputs/logs"  # chỉ dùng khi log_to_file: true
@@ -281,34 +220,28 @@ class LoggingConfig(BaseModel):
 
 
 class ApiConfig(BaseModel):
-    """Cấu hình API service (FastAPI) — đặt NGAY TẠI ĐÂY, không có trong config.yaml.
-
-    Giống LoggingConfig: sửa trực tiếp giá trị mặc định bên dưới. Thêm lại section
-    `api:` vào config.yaml thì section đó ghi đè các mặc định này.
-    """
     host: str = "0.0.0.0"
     port: int = 8000
     default_top_n: int = 5  # số bảng trả về tối đa qua /retrieve
 
+    # true  → nạp encoder/LLM/embeddings và ping LLM TRƯỚC khi nhận request; thiếu gì
+    #         thì startup hỏng luôn. Lên chậm, đổi lại /retrieve chắc chắn chạy.
+    # false → nạp lười ở /retrieve đầu tiên; lên nhanh nhưng KHÔNG bảo đảm gì.
+    # (xem api/dependencies.py::warmup_datasets)
+    preload: bool = True
+    # Rỗng = MỌI dataset có tables.json. Chỉ định (["spider"]) để khỏi chờ encode
+    # dataset không dùng tới.
+    preload_datasets: List[str] = []
+
 
 class RunOptionConfig(BaseModel):
-    """Cách chạy pipeline — đặt NGAY TẠI ĐÂY, không khai báo trong config.yaml.
-
-    Xem HUONG_DAN.md để biết cách chuyển đổi giữa hai option. Thêm lại section
-    `run_option:` vào config.yaml thì section đó ghi đè mặc định này.
-    """
-    # Option 1: "offline" — chạy toàn bộ pipeline trong Python (dùng để debug/học)
-    # Option 2: "batch"   — chạy từng bước riêng lẻ qua file steps/*.py (production)
-    mode: str = "batch"  # offline | batch
+    # one_question → chạy MỘT câu hỏi, in top-N ra terminal, không ghi file.
+    # batch        → chạy CẢ dev.json, ghi result + score ra outputs/.
+    mode: str = "batch"
 
 
 class Settings(BaseModel):
-    """Root config object — ánh xạ toàn bộ cấu hình của project.
-
-    Mọi section đều có giá trị mặc định ngay trong file này, trừ `llm`: không thể
-    đoán giúp bạn dùng endpoint/model LLM nào. Section nào xuất hiện trong
-    config.yaml thì ghi đè mặc định tương ứng; không có cũng vẫn chạy.
-    """
+    """Root config — mọi section có mặc định sẵn, trừ `llm` (bắt buộc khai trong YAML)."""
 
     general: GeneralConfig = Field(default_factory=GeneralConfig)
     encoder: EncoderConfig = Field(default_factory=EncoderConfig)
@@ -320,24 +253,18 @@ class Settings(BaseModel):
     run_option: RunOptionConfig = Field(default_factory=RunOptionConfig)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Toàn bộ config dạng dict thuần, JSON-safe — dùng cho endpoint /config."""
+        """Config dạng dict thuần, JSON-safe — dùng cho endpoint /config."""
         return self.model_dump(mode="json")
 
     @property
     def outputs(self) -> OutputPaths:
-        """Đường dẫn file trung gian & đầu ra đã điền sẵn tham số — xem OutputPaths.
-
-        `cfg.paths.*` là TEMPLATE còn nguyên {placeholder}; `cfg.outputs.*()` là
-        đường dẫn thật đã điền theo general.* / pipeline.*.
-        """
+        """Đường dẫn đầu ra đã điền sẵn tham số — xem OutputPaths.
+        (`cfg.paths.*` là template; `cfg.outputs.*()` là đường dẫn thật.)"""
         return OutputPaths(self)
 
     @property
     def dataset_paths(self) -> DatasetPathsConfig:
         """Nhóm đường dẫn đầu vào của `general.dataset` đang chọn.
-
-        Dùng thay cho get_dataset_path() cũ — truy cập bằng thuộc tính nên IDE gợi ý
-        được tên file và Ctrl+click nhảy thẳng tới khai báo:
 
             cfg.dataset_paths.tables   → "dataset/spider/tables.json"
             cfg.dataset_paths.prompt   → "prompts/spider_rewrite.txt"
@@ -360,10 +287,9 @@ class Settings(BaseModel):
 # Nạp config
 # ---------------------------------------------------------------------------
 def _apply_env_overrides(settings: Settings) -> None:
-    """Cho .env ghi đè config.yaml ở 3 giá trị hay đổi theo từng máy.
+    """Cho .env ghi đè config.yaml ở 3 giá trị hay đổi theo máy.
 
-    api_key/base_url chỉ ghi đè cho PROFILE ĐANG ACTIVE — các profile khác giữ
-    nguyên giá trị đã khai báo, để bạn vẫn chuyển sang model local khác bất cứ lúc nào.
+    api_key/base_url chỉ ghi đè cho profile ĐANG ACTIVE — profile khác giữ nguyên.
     """
     name: str = settings.llm.active_profile
     if name not in settings.llm.profiles:
@@ -413,19 +339,12 @@ def load_settings(config_path: Optional[Path] = None) -> Settings:
 # Helper đường dẫn & LLM profile
 # ---------------------------------------------------------------------------
 def list_llm_profiles() -> List[str]:
-    """Tên tất cả profile LLM đã khai báo trong config.yaml (llm.profiles).
-
-    Dùng khi bạn có nhiều model local (Ollama) muốn chuyển đổi qua lại — mỗi model
-    khai báo thành 1 profile trong config.yaml, xem HUONG_DAN.md mục 3b.
-    """
+    """Tên mọi profile LLM trong config.yaml (llm.profiles) — xem HUONG_DAN.md mục 3b."""
     return list(cfg.llm.profiles)
 
 
 def print_llm_profiles() -> None:
-    """In các profile LLM đã khai báo, đánh dấu * vào cái đang dùng.
-
-    Chạy: python -m config --llm
-    """
+    """In các profile LLM, đánh dấu * vào cái đang dùng. Chạy: python -m config --llm"""
     active: str = cfg.llm.active_profile
     print(f"{'=' * 60}\n  LLM PROFILE trong config.yaml\n{'=' * 60}")
     for name in list_llm_profiles():
@@ -435,11 +354,9 @@ def print_llm_profiles() -> None:
 
 
 def get_llm_profile(profile_name: Optional[str] = None) -> LLMProfileConfig:
-    """Cấu hình của 1 profile LLM cụ thể (model_name/base_url/api_key/temperature).
+    """Cấu hình của 1 profile LLM. None → dùng cfg.llm.active_profile.
 
-    profile_name=None → dùng cfg.llm.active_profile (đặt trong config.yaml).
-    Truyền profile_name để tạm dùng 1 model local khác mà không cần sửa config.yaml
-    (ví dụ khi muốn so sánh nhiều model local trong cùng một lần chạy/script).
+    Truyền profile_name để tạm dùng model local khác mà không sửa config.yaml.
     """
     name: str = profile_name or cfg.llm.active_profile
     if name not in cfg.llm.profiles:
@@ -457,20 +374,12 @@ def print_config() -> None:
     print("=" * 60)
 
 
-# Giá trị ví dụ cho các placeholder KHÔNG suy ra được từ cfg (do chỗ gọi truyền
-# vào lúc chạy). Chỉ dùng để in đường dẫn MẪU trong print_paths().
+# Giá trị MẪU cho placeholder không suy ra được từ cfg — chỉ dùng trong print_paths().
 _EXAMPLE_PLACEHOLDERS: Dict[str, Any] = {"hop": 1, "beam": 2, "k": 5}
 
 
 def print_paths() -> None:
-    """In mọi đường dẫn ĐÃ RESOLVE theo cfg hiện tại — để biết file thực sự nằm ở đâu.
-
-    cfg.paths.* chỉ là template còn nguyên {placeholder}. Hàm này in ra bảng đối chiếu
-    method → đường dẫn thật, kể cả sau khi đổi general.dataset / general.scale /
-    pipeline.method.
-
-    Chạy: python -m config --paths
-    """
+    """In mọi đường dẫn ĐÃ RESOLVE theo cfg hiện tại. Chạy: python -m config --paths"""
     header: str = (
         f"dataset={cfg.general.dataset} scale={cfg.general.scale} "
         f"method={cfg.pipeline.method} max_hop={cfg.pipeline.max_hop}"
@@ -483,16 +392,14 @@ def print_paths() -> None:
         print(f"  {name:22s} {getattr(ds_paths, name)}")
 
     print("\n--- File trung gian & đầu ra (cfg.outputs.*) ---")
-    # Lặp theo TÊN template nên phải render động — dùng _render() thay vì gọi từng
-    # method. Code ngoài config.py thì luôn gọi method: cfg.outputs.result(), ...
+    # Lặp theo TÊN template nên phải render động bằng _render(). Code ngoài config.py
+    # thì luôn gọi method: cfg.outputs.result(), ...
     resolver: OutputPaths = cfg.outputs
     for name, template in cfg.paths.model_dump().items():
-        # Bỏ qua spider/bird: đó là nhóm đường dẫn đầu vào, đã in ở khối trên.
+        # Bỏ qua spider/bird — đó là đường dẫn đầu vào, đã in ở khối trên.
         if not isinstance(template, str):
             continue
 
-        # Placeholder nào không suy ra được từ cfg thì điền giá trị ví dụ, và nói rõ
-        # đó là ví dụ để không ai tưởng đường dẫn cố định như vậy.
         extra: Dict[str, Any] = {
             field: _EXAMPLE_PLACEHOLDERS[field]
             for _, field, _, _ in Formatter().parse(template)
@@ -504,14 +411,11 @@ def print_paths() -> None:
     print("=" * 78)
 
 
-# Singleton — import ở bất kỳ đâu trong project đều dùng chung một instance,
-# nạp một lần duy nhất khi module được import lần đầu.
+# Singleton — nạp một lần khi module được import lần đầu, dùng chung cả project.
 cfg: Settings = load_settings()
 
 
 if __name__ == "__main__":
-    # Mọi lệnh XEM cấu hình đều nằm ở đây, không nằm trong main.py — main.py chỉ để
-    # chạy pipeline.
     #   python -m config          → toàn bộ cấu hình đang hiệu lực (JSON)
     #   python -m config --paths  → mọi đường dẫn đã resolve theo cfg hiện tại
     #   python -m config --llm    → danh sách profile LLM trong config.yaml

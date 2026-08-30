@@ -34,7 +34,7 @@ def build_retriever(
     method           : None → đọc cfg.pipeline.method. Truyền thẳng vào để chọn
                        method mà KHÔNG phải sửa config, cũng không phải tạm ghi đè
                        cfg — đây là cách methods/{murre,crush,single_hop}.py và
-                       runner.run_offline() dùng.
+                       runner.run_one_question() dùng.
     crush_collective : chỉ dùng cho Method.CRUSH — xem CrushRetriever.collective.
     """
     if method is None:

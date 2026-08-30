@@ -1,21 +1,20 @@
 # =============================================================================
 # config.yaml — Cấu hình encoder SGPT và LLM của MURRE
-#
-# Các section còn lại (general, pipeline, paths, logging, api, run_option) có giá
-# trị mặc định ngay trong src/config.py — xem các class *Config trong đó.
-# Muốn đổi bằng file cấu hình thì thêm lại section tương ứng vào đây, nó sẽ ghi đè
-# mặc định trong code.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # CẤU HÌNH MÔ HÌNH ENCODER (SGPT)
 # -----------------------------------------------------------------------------
 encoder:
-    # Tên model HuggingFace — tự động tải về lần đầu tiên
+    # Tên model HuggingFace — tự động tải về lần đầu tiên. ĐÂY là thứ quyết định
+    # dùng SGPT cỡ nào; general.scale chỉ là nhãn thư mục outputs/.
     # Các lựa chọn theo thứ tự tăng dần về chất lượng/RAM:
     #   "Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit"  (~500MB)
     #   "Muennighoff/SGPT-1.3B-weightedmean-msmarco-specb-bitfit"  (~5GB)
+    #   "Muennighoff/SGPT-2.7B-weightedmean-msmarco-specb-bitfit"  (~11GB)
     #   "Muennighoff/SGPT-5.8B-weightedmean-msmarco-specb-bitfit"  (~23GB)
+    # Đổi model thì nhớ đổi luôn general.scale, nếu không kết quả của hai model sẽ
+    # ghi đè nhau trong cùng một thư mục outputs/.
     model_name: Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit
 
     # Số lượng văn bản xử lý song song — giảm nếu gặp lỗi hết RAM

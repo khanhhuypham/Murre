@@ -50,8 +50,8 @@ class SingleHopRetriever:
 # =============================================================================
 if __name__ == "__main__":
     # Chạy riêng method này trên MỘT câu hỏi, không cần đổi pipeline.method.
-    # Trình tự chạy nằm ở methods/runner.run_offline() — xem file đó.
-    from methods.runner import run_offline
+    # Trình tự chạy nằm ở methods/runner.run_one_question() — xem file đó.
+    from methods.runner import run_one_question
     from dataset.loader import load_dev
     from enums import Method
 
@@ -67,4 +67,4 @@ if __name__ == "__main__":
     TOP_N: int = 5                   # số bảng in ra
     # ----------------------------------------------------------------------
 
-    run_offline(method=Method.SINGLE_HOP, question=QUESTION, top_n=TOP_N)
+    run_one_question(method=Method.SINGLE_HOP, question=QUESTION, top_n=TOP_N)

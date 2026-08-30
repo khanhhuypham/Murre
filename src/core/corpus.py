@@ -2,7 +2,7 @@
 method và mọi entry point.
 
 Gom lại một chỗ vì logic "đọc tables.json → build corpus → nạp/encode embeddings →
-lưu cache" trước đây bị lặp ở api.py và các script test.
+lưu cache" trước đây bị lặp ở api/ và các script test.
 """
 from __future__ import annotations
 

@@ -7,7 +7,7 @@
 #   steps/retrieve.py   ──ghi──>  TurnRecord    (turn{N}/dev*.json)
 #   steps/rewrite.py    ──ghi──>  RewriteRecord (rewrite/outputs/turn{N}/dev.{B}.json)
 #   steps/score.py      ──ghi──>  ResultRecord  (result/turn{H}/dev.json)
-#   methods/runner.py   ──ghi──>  ResultRecord  (cùng file, đường Option 1 offline)
+#   methods/runner.py   ──ghi──>  ResultRecord  (cùng file, đường run_pipeline)
 #
 # Trước đây cả 3 đều là `List[Dict[str, Any]]`, nên đọc nhầm định dạng chỉ vỡ lúc
 # chạy: `KeyError: 'retrieved'` khi đưa file rewrite vào chỗ đợi file retrieve —

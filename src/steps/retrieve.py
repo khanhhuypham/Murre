@@ -93,6 +93,7 @@ def run_retrieve(
     queries_file: Optional[str] = None,
     last_retrieved_file: Optional[str] = None,
     output_file: Optional[str] = None,
+    limit: Optional[int] = None,
 ) -> None:
     """
     Chạy bước retrieval cho một hop và một beam cụ thể.
@@ -103,6 +104,8 @@ def run_retrieve(
         queries_file        : đường dẫn file câu hỏi (None → dùng config)
         last_retrieved_file : file kết quả hop trước (None với hop=0)
         output_file         : đường dẫn output (None → dùng config)
+        limit               : chỉ chạy N câu đầu (None = tất cả). Cắt ở hop 0 là cả
+                              chuỗi steps/*.py theo sau cũng chỉ thấy N câu.
     """
     top_k_list: List[int] = cfg.general.top_k
     top_k_max: int = max(top_k_list)
@@ -132,6 +135,9 @@ def run_retrieve(
     logger.info(f"[Retrieve] Tải câu hỏi từ: {queries_file}")
     with open(queries_file, "r", encoding="utf-8") as f:
         data: List[RewriteRecord] = RewriteRecord.from_list(items=json.load(f))
+    if limit is not None:
+        data = data[:limit]
+        logger.info(f"[Retrieve] LIMIT={limit} → chỉ chạy {len(data)} câu đầu.")
 
     # ── Xác định pool tìm kiếm ────────────────────────────────────────────
     last_retrieved_data: List[TurnRecord] = []
@@ -236,6 +242,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Bước Retrieval của MURRE")
     parser.add_argument("--hop",  type=int, required=True, help="Hop hiện tại (0=full, 1+=hẹp pool)")
     parser.add_argument("--beam", type=int, default=None,  help="Chỉ số beam (chỉ cần cho hop > 0)")
+    parser.add_argument("--limit", type=int, default=None, help="Chỉ chạy N câu đầu (thử nhanh)")
     args = parser.parse_args()
 
-    run_retrieve(hop=args.hop, beam=args.beam)
+    run_retrieve(hop=args.hop, beam=args.beam, limit=args.limit)

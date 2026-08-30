@@ -116,8 +116,8 @@ class CrushRetriever:
 # =============================================================================
 if __name__ == "__main__":
     # Chạy riêng method này trên MỘT câu hỏi, không cần đổi pipeline.method.
-    # Trình tự chạy nằm ở methods/runner.run_offline() — xem file đó.
-    from methods.runner import run_offline
+    # Trình tự chạy nằm ở methods/runner.run_one_question() — xem file đó.
+    from methods.runner import run_one_question
     from dataset.loader import load_dev
     from enums import Method
 
@@ -136,7 +136,7 @@ if __name__ == "__main__":
 
     # verbose=True để CrushRetriever.run() in ra danh sách bảng mà LLM đoán —
     # chỗ hay sai nhất của CRUSH, xem trước khi đọc bảng kết quả.
-    run_offline(
+    run_one_question(
         method=Method.CRUSH,
         question=QUESTION,
         top_n=TOP_N,
