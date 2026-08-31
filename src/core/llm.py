@@ -9,9 +9,12 @@
 # =============================================================================
 from __future__ import annotations
 
-from typing import Optional
+import socket
+from typing import Optional, Tuple
+from urllib.parse import urlparse
 
-from openai import OpenAI
+import httpx
+from openai import APIConnectionError, APITimeoutError, OpenAI
 from openai.types.chat import ChatCompletion
 
 from config import LLMProfileConfig, cfg, get_llm_profile
@@ -53,12 +56,57 @@ class LLMGenerator:
                     "  2. Hoặc đổi llm.active_profile trong config.yaml sang 1 profile local (Ollama)."
                 )
 
-        self.client: OpenAI = OpenAI(api_key=api_key, base_url=base_url)
+        # Timeout PHẢI đặt tay: mặc định của SDK OpenAI là connect 5s + read 600s,
+        # nhân thêm max_retries → đợi rất lâu mới biết endpoint chưa bật.
+        self.base_url: Optional[str] = base_url
+        self.connect_timeout: float = profile_cfg.connect_timeout
+        self.client: OpenAI = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=httpx.Timeout(profile_cfg.timeout, connect=profile_cfg.connect_timeout),
+            max_retries=profile_cfg.max_retries,
+        )
+        # Bật khi đã biết server local không chạy → các lần gọi sau lỗi ngay, không
+        # chờ timeout lại từng hop (mỗi câu hỏi tốn beam_size × max_hop lần gọi).
+        self._offline: bool = False
+        # Kiểm tra ngay lúc dựng: chưa bật Ollama thì báo trước khi pipeline chạy.
+        if self.is_local:
+            self._check_local_server()
 
         provider: str = "Ollama/local" if self.is_local else (
             "OpenAI" if base_url is None else f"Custom endpoint ({base_url})"
         )
-        logger.info(f"[LLMGenerator] model='{self.model_name}' | provider={provider}")
+        logger.info(
+            f"[LLMGenerator] model='{self.model_name}' | provider={provider} | "
+            f"timeout={profile_cfg.timeout}s (connect {profile_cfg.connect_timeout}s) | "
+            f"max_retries={profile_cfg.max_retries}"
+        )
+
+    # -- Kiểm tra endpoint local ---------------------------------------------
+    def _endpoint(self) -> Tuple[str, int]:
+        """(host, port) lấy từ base_url; thiếu port thì lấy 11434 của Ollama."""
+        parsed = urlparse(url=self.base_url or "")
+        return parsed.hostname or "localhost", parsed.port or 11434
+
+    def _check_local_server(self) -> None:
+        """Thử mở TCP tới endpoint local, không kết nối được thì raise ngay.
+
+        Mở rồi đóng socket chỉ mất vài ms — nhanh và rõ ràng hơn là để request
+        HTTP tự timeout khi Ollama chưa bật.
+        """
+        host, port = self._endpoint()
+        try:
+            with socket.create_connection(address=(host, port), timeout=self.connect_timeout):
+                return
+        except OSError as e:
+            self._offline = True
+            raise RuntimeError(
+                f"Không kết nối được endpoint local {host}:{port} "
+                f"(chờ {self.connect_timeout}s).\n"
+                f"  1. Ollama đã chạy chưa? → ollama serve\n"
+                f"  2. Model đã pull chưa?  → ollama pull {self.model_name}\n"
+                f"Lỗi gốc: {e}"
+            ) from e
 
     def generate(self, prompt: str, temperature: Optional[float] = None) -> str:
         """
@@ -73,6 +121,15 @@ class LLMGenerator:
         """
         temp: float = temperature if temperature is not None else self.default_temperature
 
+        if self.is_local:
+            host, port = self._endpoint()
+            if self._offline:
+                raise RuntimeError(
+                    f"Endpoint local {host}:{port} đã xác định là không chạy ở lần gọi "
+                    f"trước. Bật `ollama serve` rồi chạy lại."
+                )
+            self._check_local_server()
+
         try:
             response: ChatCompletion = self.client.chat.completions.create(
                 model=self.model_name,
@@ -81,6 +138,20 @@ class LLMGenerator:
                 max_tokens=100,
             )
             return response.choices[0].message.content.strip()
+
+        except (APIConnectionError, APITimeoutError) as e:
+            # Server tắt giữa đường, hoặc model nạp/sinh lâu hơn timeout.
+            if self.is_local:
+                self._offline = isinstance(e, APIConnectionError)
+                host, port = self._endpoint()
+                raise RuntimeError(
+                    f"Mất kết nối tới model local '{self.model_name}' ({host}:{port}).\n"
+                    f"  1. Ollama đã chạy chưa? → ollama serve\n"
+                    f"  2. Model đã pull chưa?  → ollama pull {self.model_name}\n"
+                    f"  3. Nếu là timeout: tăng llm.profiles.*.timeout trong config.yaml\n"
+                    f"Lỗi gốc: {e}"
+                ) from e
+            raise
 
         except Exception as e:
             if self.is_local:

@@ -32,8 +32,8 @@ def load_embeddings(
 ) -> torch.Tensor:
     """Nạp embeddings corpus từ cache, chưa có thì encode rồi lưu lại.
 
-    Cache nằm ở paths.embeddings_cache — có cả {dataset} và {scale} trong tên, nên
-    đổi encoder scale sẽ dùng file cache khác chứ không nạp nhầm vector cũ.
+    Cache nằm ở paths.embeddings_cache — có cả {dataset} và {model} trong tên, nên
+    đổi encoder.model_name sẽ dùng file cache khác chứ không nạp nhầm vector cũ.
     """
     cache_path: str = cfg.outputs.for_run(dataset=dataset).embeddings_cache()
 

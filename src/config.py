@@ -9,8 +9,8 @@ buộc phải khai trong config.yaml. Trỏ file khác qua env `MURRE_CONFIG_PAT
 
     cfg.pipeline.method                # "murre"
     cfg.dataset_paths.tables           # dataset/spider/tables.json
-    cfg.outputs.result()               # outputs/spider/125m/murre/result/turn3/dev.json
-    cfg.outputs.turn_n(hop=1, beam=2)  # outputs/spider/125m/murre/turn1/dev.2.json
+    cfg.outputs.result()               # outputs/spider/sgpt-125m-.../murre/result/turn3/dev.json
+    cfg.outputs.sql(k=5)               # outputs/spider/sgpt-125m-.../murre/result/turn3/sql.5.txt
 
 .env ghi đè 3 giá trị đổi theo máy: OPENAI_API_KEY, OPENAI_BASE_URL,
 ENCODER_MODEL_NAME (xem _apply_env_overrides).
@@ -42,11 +42,23 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # Các schema con (map 1-1 với từng section trong config.yaml)
 # ---------------------------------------------------------------------------
+def model_slug(name: str) -> str:
+    """Tên model → nhãn thư mục an toàn cho đường dẫn.
+
+        Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit
+        → sgpt-125m-weightedmean-msmarco-specb-bitfit
+
+    Bỏ phần org trước "/", hạ chữ thường, ký tự lạ đổi thành "-". Nhờ vậy đổi
+    encoder.model_name là outputs/ tự tách theo model, không cần khai thêm biến
+    nào và không lo hai model ghi đè kết quả của nhau.
+    """
+    tail: str = name.strip().rstrip("/").split("/")[-1].lower()
+    safe: str = "".join(c if c.isalnum() or c in "._-" else "-" for c in tail)
+    return safe.strip("-") or "unknown"
+
+
 class GeneralConfig(BaseModel):
     dataset: str = "spider"  # spider | bird
-    # NHÃN thư mục outputs/{dataset}/{scale}/... — chuỗi tự do, KHÔNG nạp model nào.
-    # Model thật là encoder.model_name. Đặt tên riêng được, vd "125m-no-removal".
-    scale: str = "125m"
     top_k: List[int] = [3, 5, 10, 20]  # các k để tính recall (paper báo cáo 4 mức này)
     random_seed: int = 42
 
@@ -55,10 +67,15 @@ class EncoderConfig(BaseModel):
     # Tắt namespace `model_` của pydantic để dùng được tên field `model_name`.
     model_config = ConfigDict(protected_namespaces=())
 
-    # Model THỰC SỰ nạp lên. Đổi model thì nhớ đổi luôn general.scale, không thì
-    # kết quả của hai model ghi đè nhau trong cùng thư mục.
+    # Model THỰC SỰ nạp lên — cũng là thứ DUY NHẤT cần đổi khi muốn thử model khác:
+    # nhãn thư mục outputs/ suy ra từ đây (xem `slug`) nên không thể quên đồng bộ.
     model_name: str = "Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit"
     batch_size: int = 256
+
+    @property
+    def slug(self) -> str:
+        """Nhãn thư mục outputs/ suy ra từ model_name — placeholder {model}."""
+        return model_slug(name=self.model_name)
 
 
 class LLMProfileConfig(BaseModel):
@@ -70,6 +87,10 @@ class LLMProfileConfig(BaseModel):
     api_key: str = ""  # trống → điền qua .env: OPENAI_API_KEY
     base_url: str = ""  # trống → endpoint OpenAI mặc định
     temperature: float = 0.0
+
+    connect_timeout: float = 3.0
+    timeout: float = 120.0
+    max_retries: int = 1  # 0 = không thử lại; lỗi kết nối thử lại cũng vô ích
 
 
 class LLMConfig(BaseModel):
@@ -126,32 +147,32 @@ class PathsConfig(BaseModel):
         default_factory=lambda: DatasetPathsConfig.for_dataset("bird")
     )
 
-    # --- File trung gian và đầu ra ---
+    # --- File đầu ra ---
     # TEMPLATE còn nguyên {placeholder}; đường dẫn thật lấy qua cfg.outputs.*().
-    # {dataset} {scale} {method} {max_hop} điền từ cfg; {hop} {beam} {k} do chỗ gọi truyền.
-    embeddings_cache: str = "outputs/{dataset}_{scale}_embeddings.pt"
-    turn0: str = "outputs/{dataset}/{scale}/{method}/turn0/dev.json"
-    rewrite_output: str = "outputs/{dataset}/{scale}/{method}/rewrite/outputs/turn{hop}"
-    turn_n: str = "outputs/{dataset}/{scale}/{method}/turn{hop}/dev.{beam}.json"
-    result: str = "outputs/{dataset}/{scale}/{method}/result/turn{max_hop}/dev.json"
-    score: str = "outputs/{dataset}/{scale}/{method}/result/turn{max_hop}/score.json"
-    sql: str = "outputs/{dataset}/{scale}/{method}/result/turn{max_hop}/sql.{k}.txt"
+    # {dataset} {model} {method} {max_hop} điền từ cfg; {k} do chỗ gọi truyền.
+    # {model} = encoder.slug, suy ra từ encoder.model_name.
+    # Không còn template file trung gian (turn{N}/, rewrite/outputs/): pipeline giữ
+    # mọi thứ trong RAM kể từ khi chuỗi steps/{retrieve,rewrite,score}.py bị xoá.
+    embeddings_cache: str = "outputs/{dataset}_{model}_embeddings.pt"
+    result: str = "outputs/{dataset}/{model}/{method}/result/turn{max_hop}/dev.json"
+    score: str = "outputs/{dataset}/{model}/{method}/result/turn{max_hop}/score.json"
+    sql: str = "outputs/{dataset}/{model}/{method}/result/turn{max_hop}/sql.{k}.txt"
 
 
 class OutputPaths:
     """Đường dẫn đầu ra ĐÃ ĐIỀN SẴN tham số — lấy qua `cfg.outputs`.
 
     Mỗi template trong PathsConfig có đúng một method ở đây: IDE gợi ý được tên, và
-    placeholder bắt buộc (hop/beam/k) là tham số THẬT nên gõ thiếu là biết ngay lúc
-    viết code, không phải KeyError lúc chạy.
+    placeholder bắt buộc (k) là tham số THẬT nên gõ thiếu là biết ngay lúc viết
+    code, không phải KeyError lúc chạy.
 
-        cfg.outputs.result()               → outputs/spider/125m/murre/result/turn3/dev.json
-        cfg.outputs.turn_n(hop=1, beam=2)  → outputs/spider/125m/murre/turn1/dev.2.json
+        cfg.outputs.result()               → outputs/spider/sgpt-125m-.../murre/result/turn3/dev.json
+        cfg.outputs.sql(k=5)               → outputs/spider/sgpt-125m-.../murre/result/turn3/sql.5.txt
 
     Cần đường dẫn của lần chạy KHÁC mà không ghi đè `cfg` toàn cục thì dùng for_run()
     — /evaluate làm đúng vậy:
 
-        cfg.outputs.for_run(dataset="bird", scale="1.3b", method="crush").result()
+        cfg.outputs.for_run(dataset="bird", model="sgpt-1.3b-...", method="crush").result()
     """
 
     def __init__(self, settings: Settings, **overrides: Any) -> None:
@@ -162,14 +183,14 @@ class OutputPaths:
         self,
         *,
         dataset: Optional[str] = None,
-        scale: Optional[str] = None,
+        model: Optional[str] = None,
         method: Optional[str] = None,
         max_hop: Optional[int] = None,
     ) -> OutputPaths:
         """Bản sao chỉ khác ở bốn giá trị này; để None thì giữ nguyên theo `cfg`."""
         merged: Dict[str, Any] = dict(self._overrides)
         for name, value in (
-            ("dataset", dataset), ("scale", scale),
+            ("dataset", dataset), ("model", model),
             ("method", method), ("max_hop", max_hop),
         ):
             if value is not None:
@@ -181,7 +202,7 @@ class OutputPaths:
         s: Settings = self._settings
         values: Dict[str, Any] = {
             "dataset": s.general.dataset,
-            "scale": s.general.scale,
+            "model": s.encoder.slug,
             "method": s.pipeline.method,
             "max_hop": s.pipeline.max_hop,
             **self._overrides,
@@ -192,15 +213,6 @@ class OutputPaths:
     # --- Một method cho mỗi template trong PathsConfig ------------------------
     def embeddings_cache(self) -> str:
         return self._render(self._settings.paths.embeddings_cache)
-
-    def turn0(self) -> str:
-        return self._render(self._settings.paths.turn0)
-
-    def rewrite_output(self, hop: int) -> str:
-        return self._render(self._settings.paths.rewrite_output, hop=hop)
-
-    def turn_n(self, hop: int, beam: int) -> str:
-        return self._render(self._settings.paths.turn_n, hop=hop, beam=beam)
 
     def result(self) -> str:
         return self._render(self._settings.paths.result)
@@ -217,7 +229,6 @@ class LoggingConfig(BaseModel):
     log_to_file: bool = True  # true = ghi thêm ra file (append), vẫn in ra console
     log_dir: str = "outputs/logs"  # chỉ dùng khi log_to_file: true
     log_file: str = "murre.log"
-
 
 class ApiConfig(BaseModel):
     host: str = "0.0.0.0"
@@ -381,7 +392,7 @@ _EXAMPLE_PLACEHOLDERS: Dict[str, Any] = {"hop": 1, "beam": 2, "k": 5}
 def print_paths() -> None:
     """In mọi đường dẫn ĐÃ RESOLVE theo cfg hiện tại. Chạy: python -m config --paths"""
     header: str = (
-        f"dataset={cfg.general.dataset} scale={cfg.general.scale} "
+        f"dataset={cfg.general.dataset} model={cfg.encoder.slug} "
         f"method={cfg.pipeline.method} max_hop={cfg.pipeline.max_hop}"
     )
     print(f"{'=' * 78}\n  ĐƯỜNG DẪN THỰC TẾ — {header}\n{'=' * 78}")

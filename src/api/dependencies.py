@@ -66,8 +66,7 @@ def build_dataset(state: State, ds_name: Dataset) -> LoadedDataset:
     corpus: List[str] = build_schema_corpus(tables=tables)
 
     # Cache embeddings phải khớp template paths.embeddings_cache trong src/config.py
-    # (có cả {scale}), nếu
-    # không sẽ nạp vector của scale khác → kết quả sai.
+    # (có cả {model}), nếu không sẽ nạp vector của model khác → kết quả sai.
     cache_path: str = cfg.outputs.for_run(dataset=ds_name).embeddings_cache()
     embs: torch.Tensor
     if os.path.exists(cache_path):
@@ -78,7 +77,7 @@ def build_dataset(state: State, ds_name: Dataset) -> LoadedDataset:
         os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
         torch.save(obj=embs, f=cache_path)
 
-    # Cache cũ của scale/corpus khác vẫn nạp được nhưng số vector sẽ lệch với số
+    # Cache cũ của model/corpus khác vẫn nạp được nhưng số vector sẽ lệch với số
     # schema → điểm số gán nhầm bảng. Bắt tại đây thay vì trả kết quả sai âm thầm.
     if embs.shape[0] != len(corpus):
         raise RuntimeError(
@@ -150,9 +149,9 @@ def datasets_to_preload() -> List[Dataset]:
 def verify_llm(llm: LLMGenerator) -> None:
     """Gọi thử LLM một phát cho chắc chắn endpoint sống.
 
-    `LLMGenerator.__init__` chỉ dựng client, chưa chạm mạng — Ollama chưa bật hay
-    api_key sai thì tới hop đầu tiên của MURRE mới lộ. Ping ở đây để lỗi nổ lúc
-    khởi động, đúng chỗ dễ sửa nhất. Lỗi được `generate()` ném kèm hướng dẫn sẵn.
+    `LLMGenerator.__init__` chỉ ping TCP với endpoint local; api_key sai, model
+    chưa pull hay endpoint remote chết thì vẫn phải sinh thật mới lộ. Ping ở đây
+    để lỗi nổ lúc khởi động. Lỗi được `generate()` ném kèm hướng dẫn sẵn.
     """
     logger.info(f"[API] Kiểm tra LLM '{llm.model_name}' ...")
     llm.generate(prompt="ping")

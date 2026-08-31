@@ -6,15 +6,16 @@
 # CẤU HÌNH MÔ HÌNH ENCODER (SGPT)
 # -----------------------------------------------------------------------------
 encoder:
-    # Tên model HuggingFace — tự động tải về lần đầu tiên. ĐÂY là thứ quyết định
-    # dùng SGPT cỡ nào; general.scale chỉ là nhãn thư mục outputs/.
+    # Tên model HuggingFace — tự động tải về lần đầu tiên. ĐÂY là thứ DUY NHẤT
+    # quyết định dùng SGPT cỡ nào, đổi model chỉ cần sửa đúng dòng này.
     # Các lựa chọn theo thứ tự tăng dần về chất lượng/RAM:
     #   "Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit"  (~500MB)
     #   "Muennighoff/SGPT-1.3B-weightedmean-msmarco-specb-bitfit"  (~5GB)
     #   "Muennighoff/SGPT-2.7B-weightedmean-msmarco-specb-bitfit"  (~11GB)
     #   "Muennighoff/SGPT-5.8B-weightedmean-msmarco-specb-bitfit"  (~23GB)
-    # Đổi model thì nhớ đổi luôn general.scale, nếu không kết quả của hai model sẽ
-    # ghi đè nhau trong cùng một thư mục outputs/.
+    # Nhãn thư mục outputs/ suy ra từ chính tên này (SGPT-125M-weightedmean-... →
+    # sgpt-125m-weightedmean-...), nên kết quả của hai model không ghi đè nhau và
+    # cũng không có biến nào phải sửa kèm.
     model_name: Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit
 
     # Số lượng văn bản xử lý song song — giảm nếu gặp lỗi hết RAM
@@ -34,11 +35,18 @@ llm:
 
     profiles:
 
+        # Mỗi profile còn 3 khóa tùy chọn (mặc định trong src/config.py):
+        #   connect_timeout: 3.0   giây chờ MỞ kết nối — Ollama chưa bật thì lỗi ngay
+        #   timeout:         120.0 giây chờ MỘT lần sinh — model lớn cần tăng
+        #   max_retries:     1     số lần thử lại khi request lỗi
         qwen2.5-7b:
             model_name: qwen2.5:7b
             api_key: ""
             base_url: "http://localhost:11434/v1"
             temperature: 0.0
+            connect_timeout: 3.0
+            timeout: 120.0
+            max_retries: 1
 
         qwen2.5-14b:
             model_name: qwen2.5:14b

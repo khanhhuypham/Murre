@@ -1,6 +1,10 @@
-"""steps/infer.py — BƯỚC 5 (Option 2/Batch): sinh SQL từ Top-K bảng đã retrieve.
+"""steps/infer.py — Bước cuối: sinh SQL từ Top-K bảng của file result.
 
-Chạy: python -m steps.infer --top_k 5
+Đọc outputs/.../result/turn{H}/dev.json (do methods/runner.py ghi) rồi sinh SQL cho
+từng câu. runner.run_batch() gọi hàm này sau khi chạy xong retrieval; API sinh SQL
+cho MỘT câu qua /sql, dùng chung hàm dựng prompt ở đây (methods/murre.py::build_sql).
+
+Chạy riêng: python -m steps.infer --top_k 5
 """
 from __future__ import annotations
 
@@ -83,7 +87,7 @@ def run_infer(top_k: int) -> None:
         table_block: str = _build_table_prompt(schema_strings=top_schemas, dbs_dict=dbs_dict)
 
         # utterance của record kết quả là câu hỏi gốc; nếu rỗng thì lùi về câu đầu
-        # trong utterance_org (chỉ có ở file do steps/score.py sinh ra).
+        # trong utterance_org — chỉ có ở file cũ do steps/score.py (đã xoá) sinh ra.
         question: str = d.utterance or (d.extra.get("utterance_org") or [""])[0]
 
         prompt: str = _ZERO_SHOT_PROMPT.format(table=table_block, question=question)

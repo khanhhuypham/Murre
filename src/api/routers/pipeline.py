@@ -1,8 +1,8 @@
 """api/routers/pipeline.py — CHẠY pipeline cho một tổ hợp (dataset, method), cả 3 method.
 
-Scale encoder KHÔNG nằm trong API: server lấy từ general.scale (src/config.py).
-Vì vậy request lẫn response đều không có trường `model` — muốn biết scale nào thì
-đọc `result.result_file`, đường dẫn có sẵn scale trong đó.
+Encoder KHÔNG nằm trong API: server lấy từ encoder.model_name (config.yaml).
+Vì vậy request lẫn response đều không có trường `model` — muốn biết model nào thì
+đọc `result.result_file`, đường dẫn có sẵn nhãn model trong đó.
 
 /evaluate chỉ ĐỌC metric của lần chạy đã có. Nhóm endpoint này mới là thứ TẠO ra
 lần chạy đó: nó ghi `paths.result` + `paths.score`, nên chạy xong là /evaluate

@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Type, TypeVar
 
 from fastapi import HTTPException
 
-from config import cfg
+from config import cfg, model_slug
 from enums import BaseStrEnum, Dataset, Method
 from models.records import ResultRecord
 from schemas.evaluate import EvalResult
@@ -35,19 +35,19 @@ def parse_enum(enum_cls: Type[_E], value: Any, field: str) -> _E:
         ) from None
 
 
-# Chuỗi giả để dò vị trí {scale} trong template đường dẫn.
-_PROBE: str = "__scale__"
+# Chuỗi giả để dò vị trí {model} trong template đường dẫn.
+_PROBE: str = "__model__"
 
 
-def scales_on_disk(dataset: Dataset, method: Method) -> List[str]:
-    """Các scale đã thực sự có thư mục trong outputs/ — dùng cho thông báo lỗi.
+def models_on_disk(dataset: Dataset, method: Method) -> List[str]:
+    """Các nhãn model đã thực sự có thư mục trong outputs/ — dùng cho thông báo lỗi.
 
-    Không có danh sách scale hợp lệ khai ở đâu cả: scale chỉ là nhãn thư mục, nên
-    thứ đáng nói khi tra hụt là "trên đĩa đang có những scale nào".
+    Không có danh sách hợp lệ khai ở đâu cả: nhãn suy ra từ encoder.model_name của
+    lần chạy, nên thứ đáng nói khi tra hụt là "trên đĩa đang có những nhãn nào".
     """
-    # Dựng đường dẫn với scale giả rồi cắt lấy phần đứng trước → thư mục cha chứa
-    # các scale. Bám theo template nên đổi paths.result cũng không hỏng.
-    probe: str = cfg.outputs.for_run(dataset=dataset, scale=_PROBE, method=method).result()
+    # Dựng đường dẫn với nhãn giả rồi cắt lấy phần đứng trước → thư mục cha chứa
+    # các nhãn. Bám theo template nên đổi paths.result cũng không hỏng.
+    probe: str = cfg.outputs.for_run(dataset=dataset, model=_PROBE, method=method).result()
     parent: str = probe.split(_PROBE)[0]
     if not os.path.isdir(parent):
         return []
@@ -68,23 +68,26 @@ def evaluate_run(
     """
     ds: Dataset = parse_enum(Dataset, dataset, "dataset")
     mt: Method = parse_enum(Method, method, "method")
-    # scale là nhãn thư mục tự do — chỉ chuẩn hoá cho dễ gõ ('SGPT-125M' → '125m'),
-    # không kiểm tra theo danh sách nào. Sai tên thì rơi vào nhánh 404 bên dưới,
-    # ở đó có in ra các scale đang có thật trên đĩa.
-    sc: str = str(model).strip().lower().removeprefix("sgpt-")
+    # Chuẩn hoá qua đúng hàm sinh nhãn, nên gõ cả tên HuggingFace đầy đủ
+    # ("Muennighoff/SGPT-125M-...") hay gõ sẵn nhãn đều ra cùng một thư mục.
+    # Sai tên thì rơi vào nhánh 404 bên dưới, ở đó in ra các nhãn có thật trên đĩa.
+    sc: str = model_slug(name=str(model))
 
     result_file: str = cfg.outputs.for_run(
-        dataset=ds, scale=sc, method=mt
+        dataset=ds, model=sc, method=mt
     ).result()
     if not os.path.exists(result_file):
-        cmd: str = "python -m steps.score   (sau khi chạy đủ chuỗi retrieve/rewrite)"
-        have: List[str] = scales_on_disk(dataset=ds, method=mt)
+        cmd: str = (
+            f"POST /pipeline/run với dataset={ds}, method={mt} "
+            f"(hoặc `python -m main` với run_option.mode=batch)"
+        )
+        have: List[str] = models_on_disk(dataset=ds, method=mt)
         raise HTTPException(
             status_code=404,
             detail=(
                 f"Chưa có kết quả cho dataset={ds}, model={sc}, method={mt} "
                 f"(không tìm thấy {result_file}). "
-                f"Scale đã có trên đĩa: {have or 'chưa có scale nào'}. "
+                f"Model đã có trên đĩa: {have or 'chưa có model nào'}. "
                 f"Chạy trước: {cmd}"
             ),
         )

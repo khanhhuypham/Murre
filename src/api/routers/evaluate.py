@@ -28,11 +28,11 @@ router = APIRouter(tags=["evaluate"])
 async def evaluate(
     dataset: Dataset = Query(default=Dataset.SPIDER, description="spider | bird"),
     model: str = Query(
-        default=cfg.general.scale,
-        description="Nhãn scale của lần chạy — chính là thư mục trong "
-                    "outputs/{dataset}/{scale}/{method}/ (mặc định = general.scale "
-                    "của server). Nhận cả 'SGPT-125M'; tra hụt thì 404 có kèm "
-                    "danh sách scale đang có trên đĩa.",
+        default=cfg.encoder.slug,
+        description="Nhãn encoder của lần chạy — chính là thư mục trong "
+                    "outputs/{dataset}/{model}/{method}/ (mặc định = nhãn suy ra từ "
+                    "encoder.model_name của server). Nhận cả tên HuggingFace đầy đủ; "
+                    "tra hụt thì 404 có kèm danh sách nhãn đang có trên đĩa.",
     ),
     method: Method = Query(default=Method.MURRE, description="murre | single_hop | crush"),
     k: List[int] = Query(default=[5], description="Một hoặc nhiều k, ví dụ ?k=3&k=5&k=10"),
@@ -51,14 +51,14 @@ async def evaluate(
 async def evaluate_available() -> List[AvailableRun]:
     """Quét outputs/ để biết tổ hợp (dataset, method) nào đã chạy xong.
 
-    Chỉ quét scale hiện tại của server (general.scale), không duyệt cả 4 scale —
-    cùng quy ước với /pipeline/run: scale do server quyết định. Scale thực tế vẫn
-    đọc được từ `result_file`.
+    Chỉ quét nhãn encoder hiện tại của server (suy ra từ encoder.model_name), không
+    duyệt mọi model đang có trên đĩa — cùng quy ước với /pipeline/run: encoder do
+    server quyết định. Nhãn thực tế vẫn đọc được từ `result_file`.
     """
     found: List[AvailableRun] = []
     for ds in Dataset:
         for mt in Method:
-            # Không truyền scale → for_run giữ nguyên general.scale của cfg.
+            # Không truyền model → for_run giữ nguyên encoder.slug của cfg.
             f: str = cfg.outputs.for_run(dataset=ds, method=mt).result()
             if not os.path.exists(f):
                 continue

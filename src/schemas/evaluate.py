@@ -10,9 +10,9 @@ from pydantic import BaseModel, Field
 class EvalResult(BaseModel):
     """Metric THẬT tính từ một lần chạy pipeline trên máy này (không phải số paper).
 
-    KHÔNG có `model`: scale encoder do server quyết định (general.scale trong
-    src/config.py), client không chọn. Muốn biết scale nào thì đọc `result_file` —
-    đường dẫn có sẵn: outputs/{dataset}/{scale}/{method}/...
+    KHÔNG có `model`: encoder do server quyết định (encoder.model_name trong
+    config.yaml), client không chọn. Muốn biết model nào thì đọc `result_file` —
+    đường dẫn có sẵn nhãn model: outputs/{dataset}/{model}/{method}/...
     """
 
     dataset: Dataset = Field(..., description="spider | bird")
@@ -33,10 +33,10 @@ class EvalResult(BaseModel):
 class AvailableRun(BaseModel):
     """Một tổ hợp (dataset, method) đã có kết quả trên đĩa.
 
-    KHÔNG có `model`: endpoint chỉ quét scale hiện tại của server (general.scale
-    trong src/config.py), giống /pipeline/run — nên mỗi (dataset, method) chỉ ra
-    đúng một dòng. Muốn biết scale nào thì nhìn `result_file`, đường dẫn có sẵn
-    trong đó: outputs/{dataset}/{scale}/{method}/...
+    KHÔNG có `model`: endpoint chỉ quét nhãn encoder hiện tại của server (suy ra từ
+    encoder.model_name), giống /pipeline/run — nên mỗi (dataset, method) chỉ ra đúng
+    một dòng. Muốn biết model nào thì nhìn `result_file`, đường dẫn có sẵn trong đó:
+    outputs/{dataset}/{model}/{method}/...
     """
 
     dataset: Dataset = Field(..., description="spider | bird")

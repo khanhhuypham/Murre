@@ -8,7 +8,7 @@ File này KHÔNG chứa endpoint nào. Cấu trúc cả gói:
     ├── dependencies.py ← nạp encoder/LLM/embeddings theo dataset
     ├── evaluator.py    ← evaluate_run(): tính metric từ file kết quả
     ├── jobs.py         ← thân một job chạy pipeline trong thread riêng
-    └── routers/        ← health | retrieve | pipeline | evaluate
+    └── routers/        ← health | retrieve | pipeline | evaluate | sql
 
 Trạng thái dùng chung nằm trong app.state (khởi tạo ở lifespan); router đọc qua
 request.app.state nên không file nào phải import ngược lại app.
@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 
 from api.dependencies import available_datasets, warmup_datasets
-from api.routers import evaluate, health, pipeline, retrieve
+from api.routers import evaluate, health, pipeline, retrieve, sql
 from utils import logger
 
 load_dotenv()
@@ -63,6 +63,7 @@ def create_app() -> FastAPI:
     application.include_router(retrieve.router)
     application.include_router(pipeline.router)
     application.include_router(evaluate.router)
+    application.include_router(sql.router)
     return application
 
 

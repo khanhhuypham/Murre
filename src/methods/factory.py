@@ -1,11 +1,6 @@
-"""methods/factory.py — Khởi tạo đúng phương pháp retrieval theo cfg.pipeline.method,
-để main.py / steps/*.py không phải biết chi tiết từng phương pháp.
-
+"""methods/factory.py
 Cả 3 retriever có chung một giao diện:
-
     run(question, corpus, schema_embeddings, verbose=False) -> List[RetrievedTable]
-
-(xem models/retrieval.py). Nhờ vậy chỗ gọi không cần biết đang dùng method nào.
 """
 from __future__ import annotations
 
@@ -17,10 +12,10 @@ from core.llm import LLMGenerator
 from core.rewriter import QueryRewriter
 from enums import Method
 from methods.crush import CrushRetriever
-from methods.murre import MURREPipeline
+from methods.murre import MurreRetriever
 from methods.single_hop import SingleHopRetriever
 
-RetrieverType = Union[MURREPipeline, SingleHopRetriever, CrushRetriever]
+RetrieverType = Union[MurreRetriever, SingleHopRetriever, CrushRetriever]
 
 
 def build_retriever(
@@ -30,11 +25,6 @@ def build_retriever(
     crush_collective: bool = True,
 ) -> RetrieverType:
     """Trả về đúng retriever theo `method` (xem enum Method).
-
-    method           : None → đọc cfg.pipeline.method. Truyền thẳng vào để chọn
-                       method mà KHÔNG phải sửa config, cũng không phải tạm ghi đè
-                       cfg — đây là cách methods/{murre,crush,single_hop}.py và
-                       runner.run_one_question() dùng.
     crush_collective : chỉ dùng cho Method.CRUSH — xem CrushRetriever.collective.
     """
     if method is None:
@@ -53,7 +43,7 @@ def build_retriever(
         case Method.MURRE:
             assert llm is not None, "MURRE cần LLMGenerator cho pha Removal."
             rewriter: QueryRewriter = QueryRewriter(llm=llm)
-            return MURREPipeline(encoder=encoder, rewriter=rewriter)
+            return MurreRetriever(encoder=encoder, rewriter=rewriter, llm=llm)
 
         case Method.SINGLE_HOP:
             return SingleHopRetriever(encoder=encoder)

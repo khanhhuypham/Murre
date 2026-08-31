@@ -2,8 +2,8 @@
 # utils/scoring.py — Hai công thức tính điểm của paper, khai báo ĐÚNG MỘT LẦN
 #
 # Trước đây mỗi công thức nằm rải ở nhiều file (methods/murre.py, steps/score.py,
-# steps/rewrite.py) và đã bắt đầu lệch nhau. Gom về đây để sửa một chỗ là mọi
-# đường chạy (Option 1 in-process và Option 2 batch) cùng đổi theo.
+# steps/rewrite.py) và đã bắt đầu lệch nhau. Nay chỉ còn methods/murre.py gọi tới,
+# nhưng vẫn để riêng ở đây: công thức của paper thì tách khỏi phần điều phối.
 # =============================================================================
 from __future__ import annotations
 

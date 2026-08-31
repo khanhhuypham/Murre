@@ -11,12 +11,11 @@ from utils import logger
 
 
 if __name__ == "__main__":
-
     mode: str = cfg.run_option.mode
     method: Method = Method(cfg.pipeline.method)
 
     logger.info(
-        f"[Main] mode={mode} | dataset={cfg.general.dataset} | scale={cfg.general.scale} "
+        f"[Main] mode={mode} | dataset={cfg.general.dataset} | model={cfg.encoder.slug} "
         f"| method={method}"
     )
 
@@ -36,8 +35,8 @@ if __name__ == "__main__":
 
     # Option 2 — CẢ dev.json, ghi kết quả ra outputs/.
     elif mode == "batch":
-        TOP_K: int = 5  # số bảng đưa vào bước sinh SQL
-        LIMIT: int | None = 10  # chỉ chạy N câu đầu (chỉ single_hop/crush)
+        TOP_K: int = 5  # số bảng đưa vào bước sinh SQL (chỉ murre)
+        LIMIT: int | None = 2  # chỉ chạy N câu đầu (dùng được với cả 3 method)
         FORCE_EMBED: bool = False  # True → mã hóa lại corpus dù đã có cache .pt
 
         run_batch(

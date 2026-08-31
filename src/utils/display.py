@@ -24,7 +24,7 @@ def print_results(
     print()
     print("=" * 78)
     print(f"  METHOD  : {method}")
-    print(f"  DATASET : {cfg.general.dataset} | ENCODER SCALE: {cfg.general.scale}")
+    print(f"  DATASET : {cfg.general.dataset} | ENCODER: {cfg.encoder.model_name}")
     print(f"  QUESTION: {question}")
     print("=" * 78)
 

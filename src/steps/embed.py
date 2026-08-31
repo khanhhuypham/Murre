@@ -6,14 +6,14 @@
 # CÁCH CHẠY (Option 2 — Batch mode):
 #   python -m steps.embed
 #
-# Kết quả lưu tại: outputs/{dataset}_{scale}_embeddings.pt  (paths.embeddings_cache)
+# Kết quả lưu tại: outputs/{dataset}_{model}_embeddings.pt  (paths.embeddings_cache)
 #
 # Bước này KHÔNG bắt buộc: mọi chỗ cần embeddings đều gọi core/corpus.prepare(),
 # và prepare() tự encode rồi lưu cache nếu chưa có. Chạy riêng ở đây hữu ích khi
 # muốn mã hóa trước một lần cho xong (BirdUnion mất vài phút trên CPU) rồi mới bắt
 # đầu chuỗi retrieve/rewrite dài.
 #
-# Trước đây bước này ghi ra outputs/{dataset}/{scale}/embeddings.json theo format
+# Trước đây bước này ghi ra outputs/{dataset}/{model}/embeddings.json theo format
 # của tác giả — cùng một bộ vector nhưng lưu thành 2 định dạng, encode 2 lần. Nay
 # chỉ còn cache .pt duy nhất, dùng chung cho cả Option 1, Option 2 và API.
 # =============================================================================

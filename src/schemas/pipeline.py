@@ -16,15 +16,14 @@ from schemas.evaluate import EvalResult
 class PipelineRunRequest(BaseModel):
     """Body của POST /pipeline/run — 3 tham số chính + limit để chạy thử nhanh.
 
-    KHÔNG có `model`: scale encoder do server quyết định, lấy từ general.scale trong
-    src/config.py. Lý do: scale phải khớp với encoder.model_name và với cache
-    embeddings đã có sẵn trên máy chủ, để client tự chọn thì dễ sinh ra lần chạy nạp
-    model chưa tải về (SGPT-5.8B ~23GB). Scale thực tế vẫn được báo lại trong
-    PipelineJob.model.
+    KHÔNG có `model`: encoder do server quyết định, lấy từ encoder.model_name trong
+    config.yaml. Lý do: model phải khớp với cache embeddings đã có sẵn trên máy chủ,
+    để client tự chọn thì dễ sinh ra lần chạy phải tải model mới (SGPT-5.8B ~23GB).
+    Nhãn model thực tế vẫn được báo lại trong PipelineJob.model.
     """
 
     # extra="forbid": client cũ còn gửi "model" sẽ nhận 422 kèm tên field sai, thay
-    # vì bị bỏ qua âm thầm rồi tưởng server đã chạy đúng scale mình chọn.
+    # vì bị bỏ qua âm thầm rồi tưởng server đã chạy đúng model mình chọn.
     model_config = ConfigDict(extra="forbid")
 
     dataset: Dataset = Field(default=Dataset.SPIDER, description="spider | bird")
@@ -44,8 +43,8 @@ class PipelineRunRequest(BaseModel):
 class PipelineJob(BaseModel):
     """Trạng thái một lần chạy pipeline.
 
-    KHÔNG có `model`, giống PipelineRunRequest và EvalResult: scale encoder do
-    server quyết định. Scale thực tế đọc được từ `result.result_file`.
+    KHÔNG có `model`, giống PipelineRunRequest và EvalResult: encoder do server
+    quyết định. Nhãn model thực tế đọc được từ `result.result_file`.
     """
 
     job_id: str = Field(..., description="Dùng để poll GET /pipeline/jobs/{job_id}")

@@ -7,9 +7,9 @@ Cách dùng:
     Dataset("SPIDER")        → Dataset.SPIDER      (không phân biệt hoa/thường)
     Dataset("mysql")         → ValueError
 
-Scale encoder KHÔNG có enum ở đây, và cũng không có danh sách hợp lệ ở đâu cả:
-`general.scale` chỉ là NHÃN thư mục outputs/, chuỗi tự do. Model thật sự nạp lên
-là `encoder.model_name` trong config.yaml.
+Encoder KHÔNG có enum ở đây, và cũng không có danh sách hợp lệ ở đâu cả: model
+khai bằng `encoder.model_name` trong config.yaml (chuỗi tự do, tên HuggingFace),
+còn nhãn thư mục outputs/ thì suy ra từ nó qua `cfg.encoder.slug`.
 
 Vì kế thừa `str`, mọi member vẫn dùng được như chuỗi (`f"dataset/{ds}/..."`,
 so sánh với `"spider"`, FastAPI/Pydantic serialize ra đúng giá trị JSON), nên

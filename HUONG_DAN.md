@@ -14,7 +14,7 @@ tabulation, w/o early stop) dùng để tái tạo Table 2, 3 và 4 của paper.
 4. [Option 1 — One question (1 câu hỏi)](#4-option-1--one-question-1-câu-hỏi)
     - [4b. Test riêng một method](#4b-test-riêng-một-method-python--m-methods)
 5. [Option 2 — Batch (toàn dataset)](#5-option-2--batch-toàn-dataset)
-    - [5b. Chạy từng bước riêng lẻ](#5b-chạy-từng-bước-riêng-lẻ-chỉ-khi-method-murre)
+    - [5b. Xem chi tiết từng hop khi debug](#5b-xem-chi-tiết-từng-hop-khi-debug)
 6. [Tái tạo Table 2/3 — So sánh MURRE vs Single-hop vs CRUSH](#6-tái-tạo-table-23--so-sánh-murre-vs-single-hop-vs-crush)
     - [6b. Chạy nhanh 2 baseline không cần đổi method](#6b-chạy-nhanh-2-baseline-mà-không-cần-đổi-pipelinemethod)
 7. [Tái tạo Table 4 — Ablation Study](#7-tái-tạo-table-4--ablation-study)
@@ -52,22 +52,18 @@ MURRE/                               ← Thư mục gốc (Working Directory khi
 │   │   ├── rewriter.py              ← QueryRewriter (Removal + Tabulation, §3.4)
 │   │   └── corpus.py                ← prepare(): corpus + embeddings (có cache)
 │   ├── methods/                     ← 3 method của Table 2 + cách chọn và chạy chúng
-│   │   ├── murre.py                 ← MURREPipeline — method chính (beam search, §3.2/§3.5)
+│   │   ├── murre.py                 ← MurreRetriever — method chính (beam search, §3.2/§3.5)
 │   │   ├── single_hop.py            ← Baseline Single-hop (§4.2)
 │   │   ├── crush.py                 ← Baseline CRUSH (§4.2, prompt tự suy luận — xem mục 12)
 │   │   ├── factory.py               ← build_retriever(): chọn đúng method theo config
 │   │   └── runner.py                ← NƠI DUY NHẤT viết cách chạy: run_one_question /
-│   │                                  run_pipeline / run_batch_murre / run_batch
-│   ├── steps/                       ← Batch pipeline (Option 2)
-│   │   ├── embed.py                 ← Bước 1: mã hóa corpus
-│   │   ├── retrieve.py              ← Bước 2: dense retrieval mỗi hop
-│   │   ├── rewrite.py               ← Bước 3: Removal/Splice mỗi hop
-│   │   ├── score.py                 ← Bước 4: Score_Path / Score_Table (§3.5)
-│   │   ├── infer.py                 ← Bước 5: sinh SQL
-│   │   └── _common.py               ← find_json_files() dùng chung cho rewrite/score
+│   │                                  run_pipeline / run_batch
+│   ├── steps/                       ← Hai bước phụ trợ chạy riêng được
+│   │   ├── embed.py                 ← Mã hóa corpus trước (tuỳ chọn, có cache)
+│   │   └── infer.py                 ← Sinh SQL từ file result
 │   ├── models/                      ← Đối tượng NỘI BỘ dùng chung giữa các module
 │   │   ├── retrieval.py             ← RetrievedTable (method trả về), RetrievedRow (dòng JSON)
-│   │   └── records.py               ← TurnRecord / RewriteRecord / ResultRecord
+│   │   └── records.py               ← ResultRecord (định dạng file result)
 │   ├── schemas/                     ← Pydantic model cho request/response của API
 │   │   ├── retrieve.py              ← RetrieveRequest, TableResult
 │   │   ├── evaluate.py              ← EvalResult, AvailableRun
@@ -105,13 +101,6 @@ bằng đường dẫn tương đối, tính từ **Working Directory = thư m�
 
 ## 2. Đặt data files
 
-```bash
-cp path/to/dev.json     dataset/spider/dev.json
-cp path/to/tables.json  dataset/spider/tables.json
-cp path/to/gold.txt     dataset/spider/gold.txt
-# Tương tự cho dataset/bird/ nếu cần
-```
-
 **Định dạng bắt buộc** (không phải Spider/BIRD gốc, mà là bản "Union" đã tiền xử lý):
 - `tables.json`: list các database, mỗi database có field `db_id` và `schema` (list
   chuỗi `"db.table(col1, col2, ...)"`).
@@ -138,7 +127,6 @@ Các tham số quan trọng nhất:
 | Tham số | Mặc định | Sửa ở | Ý nghĩa |
 |---|---|---|---|
 | `general.dataset` | `spider` | `GeneralConfig` (config.py) | `spider` hoặc `bird` |
-| `general.scale` | `125m` | `GeneralConfig` (config.py) | **Nhãn** thư mục `outputs/` — chuỗi tự do, không nạp model nào |
 | `pipeline.method` | `murre` | `PipelineConfig` (config.py) | `murre` \| `single_hop` \| `crush` — chọn phương pháp retrieval |
 | `pipeline.beam_size` | `5` | `PipelineConfig` (config.py) | B trong paper |
 | `pipeline.max_hop` | `3` | `PipelineConfig` (config.py) | H trong paper |
@@ -146,7 +134,7 @@ Các tham số quan trọng nhất:
 | `pipeline.ablation.tabulation` | `True` | `AblationConfig` (config.py) | `False` = "w/o tabulation" (Table 4) |
 | `pipeline.ablation.early_stop` | `True` | `AblationConfig` (config.py) | `False` = "w/o early stop" (Table 4) |
 | `run_option.mode` | `batch` | `RunOptionConfig` (config.py) | `one_question` (Option 1) hoặc `batch` (Option 2) |
-| `encoder.model_name` | SGPT-125M | `config.yaml` | Model THẬT được nạp. Đổi cái này thì đổi luôn `general.scale`, không thì kết quả 2 model ghi đè nhau |
+| `encoder.model_name` | SGPT-125M | `config.yaml` | Model THẬT được nạp, và cũng là **nguồn duy nhất** của nhãn thư mục `outputs/` (xem `cfg.encoder.slug`) — đổi model là outputs/ tự tách, không có biến nào phải sửa kèm |
 | `encoder.batch_size` | `256` | `config.yaml` | Giảm nếu hết RAM |
 | `llm.active_profile` | `qwen2.5-0.5b` | `config.yaml` | Xem mục 3b |
 
@@ -258,7 +246,7 @@ Bỏ trống `--question` thì lấy câu đầu tiên trong `dev.json`. Nếu c
 ```
 ==============================================================================
   METHOD  : Single-hop
-  DATASET : spider | ENCODER SCALE: 125m
+  DATASET : spider | ENCODER: Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit
   QUESTION: Show name, country, age for all singers ordered by age ...
 ==============================================================================
 Gold (1 bảng):
@@ -327,186 +315,62 @@ class RunOptionConfig(BaseModel):
 python -m main
 ```
 
-`main.py` chọn đường chạy theo `pipeline.method`:
+Cả 3 method đi CHUNG một đường: `run_batch()` → `run_pipeline()` → retriever tương
+ứng trong `methods/` (dựng qua `methods/factory.py`). Mỗi method có đúng MỘT bản cài
+đặt, nên số của `python -m main`, `/retrieve` và `/pipeline/run` luôn khớp nhau.
 
-| `pipeline.method` | Đường chạy | Các bước |
+| `pipeline.method` | Lớp chạy | Các bước |
 |---|---|---|
-| `murre` | chuỗi `steps/*.py` | `embed → retrieve(hop0) → [rewrite(hop) → retrieve(hop+1, mỗi beam)] × max_hop → score → infer` |
-| `single_hop` / `crush` | `methods/runner.py` | gọi thẳng `methods/*.run()` cho từng câu rồi ghi `result` + `score` |
+| `murre` | `MurreRetriever` (`methods/murre.py`) | hop 0 toàn corpus → `[Completing Tables → retrieve trong pool → tỉa beam] × max_hop` → Score_Path/Score_Table → sinh SQL |
+| `single_hop` | `SingleHopRetriever` | retrieve một lần trên toàn corpus |
+| `crush` | `CrushRetriever` | LLM hallucinate schema → retrieve |
 
-2 baseline không có multi-hop nên không dùng được chuỗi `steps/`; `methods/runner.py`
-chạy chúng trên cả `dev.json` bằng một đường code riêng. Đường này **không sinh SQL**
-(không có bước `infer`) — chỉ MURRE chạy đủ 5 bước.
+Chỉ `murre` chạy thêm bước sinh SQL (`steps/infer.py`) sau khi retrieve xong — hai
+baseline dừng ở `result` + `score`.
 
-Bước `embed` tự bỏ qua nếu cache `.pt` đã có; đặt `FORCE_EMBED = True` để ép
-mã hóa lại (cần khi đổi dataset hoặc đổi encoder).
+> Trước đây `murre` có đường batch RIÊNG: chuỗi `steps/{retrieve,rewrite,score}.py`,
+> tức một bản cài đặt MURRE thứ hai đọc/ghi file trung gian. Bản đó khởi tạo điểm mọi
+> bảng hop-0 bằng `0.0` trong khi `Score_Path` luôn ≤ 0, nên xếp hạng cuối bằng đúng
+> thứ tự hop 0 — multi-hop bị vô hiệu hoàn toàn. Đã xoá; lấy lại từ git history nếu
+> cần đối chiếu.
 
-Chạy thử nhanh trên vài câu đầu (chỉ `single_hop`/`crush`):
+Embeddings tự nạp từ cache `.pt`, chưa có thì tự encode rồi lưu. Đặt
+`FORCE_EMBED = True` để xoá cache và mã hóa lại (cần khi đổi encoder).
+
+Chạy thử nhanh trên vài câu đầu (dùng được với cả 3 method):
 
 ```python
 # src/main.py — khối __main__
 LIMIT: int | None = 8
 ```
 
-### 5b. Chạy từng bước riêng lẻ (chỉ khi `method: murre`)
+### 5b. Xem chi tiết từng hop khi debug
 
-Chạy tay từng bước hữu ích khi debug: xem được output trung gian của mỗi hop và
-chạy lại đúng một bước bị lỗi mà không phải làm lại từ đầu.
-
-**Thứ tự phụ thuộc.** `retrieve` và `rewrite` xen kẽ nhau, mỗi bước đọc output của
-bước trước. Sơ đồ dưới đây viết đầy đủ **không rút gọn**, đúng theo cấu hình mặc định
-của paper (`beam_size: 5` → beam `0..4`; `max_hop: 3` → hop `0..3`). Mọi đường dẫn
-đều tính từ `outputs/{dataset}/{scale}/{method}/`, trừ cache embeddings nằm ở
-`outputs/{dataset}_{scale}_embeddings.pt` (dùng chung cho cả 3 method):
-
-```
-embed                                           → {dataset}_{scale}_embeddings.pt
-└─ retrieve --hop 0                             → turn0/dev.json
-   └─ rewrite  --hop 0                          → rewrite/outputs/turn0/dev.0.json
-      │                                           rewrite/outputs/turn0/dev.1.json
-      │                                           rewrite/outputs/turn0/dev.2.json
-      │                                           rewrite/outputs/turn0/dev.3.json
-      │                                           rewrite/outputs/turn0/dev.4.json
-      ├─ retrieve --hop 1 --beam 0              → turn1/dev.0.json
-      ├─ retrieve --hop 1 --beam 1              → turn1/dev.1.json
-      ├─ retrieve --hop 1 --beam 2              → turn1/dev.2.json
-      ├─ retrieve --hop 1 --beam 3              → turn1/dev.3.json
-      └─ retrieve --hop 1 --beam 4              → turn1/dev.4.json
-         └─ rewrite  --hop 1                    → rewrite/outputs/turn1/dev.0.json
-            │                                     rewrite/outputs/turn1/dev.1.json
-            │                                     rewrite/outputs/turn1/dev.2.json
-            │                                     rewrite/outputs/turn1/dev.3.json
-            │                                     rewrite/outputs/turn1/dev.4.json
-            ├─ retrieve --hop 2 --beam 0        → turn2/dev.0.json
-            ├─ retrieve --hop 2 --beam 1        → turn2/dev.1.json
-            ├─ retrieve --hop 2 --beam 2        → turn2/dev.2.json
-            ├─ retrieve --hop 2 --beam 3        → turn2/dev.3.json
-            └─ retrieve --hop 2 --beam 4        → turn2/dev.4.json
-               └─ rewrite  --hop 2              → rewrite/outputs/turn2/dev.0.json
-                  │                               rewrite/outputs/turn2/dev.1.json
-                  │                               rewrite/outputs/turn2/dev.2.json
-                  │                               rewrite/outputs/turn2/dev.3.json
-                  │                               rewrite/outputs/turn2/dev.4.json
-                  ├─ retrieve --hop 3 --beam 0  → turn3/dev.0.json
-                  ├─ retrieve --hop 3 --beam 1  → turn3/dev.1.json
-                  ├─ retrieve --hop 3 --beam 2  → turn3/dev.2.json
-                  ├─ retrieve --hop 3 --beam 3  → turn3/dev.3.json
-                  └─ retrieve --hop 3 --beam 4  → turn3/dev.4.json
-                     └─ score                   → result/turn3/dev.json
-                        │                         result/turn3/score.json
-                        └─ infer --top_k 5      → result/turn3/sql.5.txt
-                                                  result/turn3/inp.5.txt
-```
-
-Ba quy tắc đọc ra từ sơ đồ trên:
-
-- **`retrieve` chạy 5 lần mỗi hop, `rewrite` chỉ chạy 1 lần.** Một lệnh `rewrite
-  --hop N` đọc *toàn bộ* 5 file trong `turn{N}/` rồi tự sinh ra cả 5 file beam mới —
-  không có tham số `--beam` cho `rewrite`.
-- **Thiếu một beam sẽ không báo lỗi.** Nếu quên `retrieve --hop 2 --beam 3`, thì
-  `rewrite --hop 2` vẫn chạy bình thường nhưng chỉ thấy 4 đường đi, và `score` tổng
-  hợp trên dữ liệu thiếu → số liệu sai mà không có cảnh báo nào. Đếm số file trong
-  `turn{N}/` phải đúng bằng `beam_size` trước khi qua bước sau.
-- **Hop cuối không cần rewrite.** `rewrite` chạy ở hop `0..max_hop-1` (0, 1, 2), còn
-  `retrieve` chạy ở hop `0..max_hop` (0, 1, 2, 3). `rewrite --hop 3` là vô nghĩa vì
-  không còn hop 4 nào dùng output của nó.
-
-Nếu bạn đổi `beam_size` hoặc `max_hop` (class `PipelineConfig` trong
-`src/config.py`), số nhánh trong sơ đồ đổi
-theo: mỗi hop có đúng `beam_size` lệnh `retrieve`, và có `max_hop` lệnh `rewrite`
-(hop `0` tới `max_hop-1`).
-
-**Chuỗi lệnh đầy đủ** với cấu hình mặc định của paper (`beam_size: 5` → beam
-`0..4`, `max_hop: 3` → hop `0..3`) — tổng cộng 22 lệnh, chạy đúng theo thứ tự này:
+Không còn file trung gian để mở ra xem: `MurreRetriever` giữ toàn bộ beam search trong
+RAM. Muốn theo dõi từng hop thì chạy Option 1 với `verbose=True` — nó in pool hop 0,
+số ứng viên và số beam giữ lại ở mỗi hop, beam nào early-stop, và top-3 cuối cùng:
 
 ```bash
-# ── Bước 1: mã hóa corpus (chỉ cần chạy lại khi đổi dataset hoặc encoder) ──
-python -m steps.embed
-
-# ── Hop 0: retrieve trên TOÀN BỘ corpus bằng câu hỏi gốc ──
-python -m steps.retrieve --hop 0
-python -m steps.rewrite  --hop 0
-
-# ── Hop 1: retrieve trong pool đã hẹp, cho từng beam ──
-python -m steps.retrieve --hop 1 --beam 0
-python -m steps.retrieve --hop 1 --beam 1
-python -m steps.retrieve --hop 1 --beam 2
-python -m steps.retrieve --hop 1 --beam 3
-python -m steps.retrieve --hop 1 --beam 4
-python -m steps.rewrite  --hop 1
-
-# ── Hop 2 ──
-python -m steps.retrieve --hop 2 --beam 0
-python -m steps.retrieve --hop 2 --beam 1
-python -m steps.retrieve --hop 2 --beam 2
-python -m steps.retrieve --hop 2 --beam 3
-python -m steps.retrieve --hop 2 --beam 4
-python -m steps.rewrite  --hop 2
-
-# ── Hop 3 = max_hop: chỉ retrieve, KHÔNG rewrite nữa ──
-python -m steps.retrieve --hop 3 --beam 0
-python -m steps.retrieve --hop 3 --beam 1
-python -m steps.retrieve --hop 3 --beam 2
-python -m steps.retrieve --hop 3 --beam 3
-python -m steps.retrieve --hop 3 --beam 4
-
-# ── Tổng hợp Score_Path / Score_Table (§3.5) rồi sinh SQL ──
-python -m steps.score
-python -m steps.infer --top_k 5
+python -m methods.murre
 ```
 
-**Rút gọn bằng vòng lặp.** Nếu đổi `beam_size`/`max_hop`, dùng vòng lặp thay vì sửa
-tay danh sách trên.
+Khối `__main__` của `src/methods/murre.py` có sẵn `VERBOSE = True` và cho phép ghi đè
+`BEAM_SIZE` / `MAX_HOP` ngay tại chỗ, không phải sửa `config.yaml`.
 
-PowerShell (Windows):
-```powershell
-$BEAM = 5; $MAXHOP = 3
-python -m steps.embed
-python -m steps.retrieve --hop 0
-foreach ($hop in 1..$MAXHOP) {
-    python -m steps.rewrite --hop ($hop - 1)
-    foreach ($b in 0..($BEAM - 1)) { python -m steps.retrieve --hop $hop --beam $b }
-}
-python -m steps.score
-python -m steps.infer --top_k 5
-```
-
-Bash (Linux/Mac/Git Bash):
-```bash
-BEAM=5; MAXHOP=3
-python -m steps.embed
-python -m steps.retrieve --hop 0
-for hop in $(seq 1 $MAXHOP); do
-    python -m steps.rewrite --hop $((hop - 1))
-    for b in $(seq 0 $((BEAM - 1))); do
-        python -m steps.retrieve --hop "$hop" --beam "$b"
-    done
-done
-python -m steps.score
-python -m steps.infer --top_k 5
-```
-
-**Tham số của từng bước:**
+Hai bước vẫn chạy riêng được:
 
 | Lệnh | Tham số | Đọc từ | Ghi ra |
 |---|---|---|---|
-| `steps.embed` | *(không có)* | `dataset/{ds}/tables.json` | `{dataset}_{scale}_embeddings.pt` |
-| `steps.retrieve` | `--hop N` (bắt buộc), `--beam B` (bắt buộc khi N≥1) | hop 0: `dev.json`<br>hop N: `rewrite/outputs/turn{N-1}/dev.{B}.json` | hop 0: `turn0/dev.json`<br>hop N: `turn{N}/dev.{B}.json` |
-| `steps.rewrite` | `--hop N` (bắt buộc) | `turn{N}/` (mọi beam) | `rewrite/outputs/turn{N}/dev.{0..B-1}.json` |
-| `steps.score` | *(không có)* | `turn0/` + `turn{1..max_hop}/` | `result/turn{max_hop}/{dev,score}.json` |
-| `steps.infer` | `--top_k K` (mặc định 5) | `result/turn{max_hop}/dev.json` | `result/turn{max_hop}/sql.{K}.txt` |
+| `python -m steps.embed` | *(không có)* | `dataset/{ds}/tables.json` | `{dataset}_{model}_embeddings.pt` |
+| `python -m steps.infer` | `--top_k K` (mặc định 5) | `result/turn{max_hop}/dev.json` | `result/turn{max_hop}/sql.{K}.txt` |
 
-Lưu ý về `--beam`: argparse **không** bắt buộc tham số này (`--hop` thì có). Chạy
-`python -m steps.retrieve --hop 1` mà quên `--beam` sẽ không báo lỗi tham số, mà đi
-tìm file `dev.None.json` rồi mới chết với `FileNotFoundError` — thấy `None` trong
-tên file nghĩa là thiếu `--beam`. Ở `--hop 0` thì `--beam` bị bỏ qua (hop 0 chưa có
-beam nào).
+`steps.embed` không bắt buộc — mọi đường chạy đều tự encode và lưu cache khi thiếu.
+Chạy trước cho xong hữu ích với BirdUnion (mất vài phút trên CPU).
 
-**Chi phí LLM.** Mỗi `rewrite --hop N` gọi LLM `beam_size × số câu hỏi` lần — với
-Spider dev (658 câu), beam 5 là 3.290 lần gọi mỗi hop, 3 hop là ~9.870 lần. Chạy
-model local qua Ollama thì miễn phí nhưng mất nhiều giờ; nếu chỉ muốn kiểm tra
-pipeline chạy đúng, hãy giảm tạm `beam_size = 2` và `max_hop = 1` trong
-`PipelineConfig` (`src/config.py`) trước.
+**Chi phí LLM.** Mỗi hop gọi LLM `beam_size` lần cho mỗi câu hỏi — với Spider dev
+(658 câu), beam 5 × 3 hop là ~9.870 lần gọi. Model local qua Ollama thì miễn phí
+nhưng mất nhiều giờ; muốn kiểm tra pipeline chạy đúng thì đặt `LIMIT` nhỏ trong
+`main.py`, hoặc giảm `beam_size = 2` và `max_hop = 1` trong `PipelineConfig`.
 
 ## 6. Tái tạo Table 2/3 — So sánh MURRE vs Single-hop vs CRUSH
 
@@ -521,7 +385,7 @@ class PipelineConfig(BaseModel):
 ```
 
 Mỗi lần chạy, kết quả `recall@k` / `complete_recall@k` được in ra và lưu tại
-`outputs/{dataset}/{scale}/{method}/result/turn{max_hop}/score.json` — vì đường dẫn
+`outputs/{dataset}/{model}/{method}/result/turn{max_hop}/score.json` — vì đường dẫn
 output có `{method}`, kết quả của 3 phương pháp không đè lên nhau.
 
 ### 6b. Chạy nhanh 2 baseline mà không cần đổi `pipeline.method`
@@ -553,9 +417,7 @@ python src/methods/crush.py
 **Collective retrieval trong CRUSH.** LLM thường hallucinate ra *nhiều* bảng, mỗi bảng
 một dòng. Mặc định (`collective=True`) mỗi dòng được encode thành **một query riêng**,
 rồi mỗi bảng trong corpus lấy điểm similarity **cao nhất** trên tất cả các query — đúng
-cơ chế của CRUSH gốc, và cùng quy ước max-aggregation mà
-`steps/retrieve.py::retrieve_for_queries()` dùng cho multi-subquery của MURRE, nên hai
-phương pháp so sánh được công bằng. Với `COLLECTIVE = False`, toàn bộ output của LLM bị
+cơ chế của CRUSH gốc. Với `COLLECTIVE = False`, toàn bộ output của LLM bị
 gộp thành **một** chuỗi rồi encode một lần — embedding bị trung bình hóa giữa các bảng
 khác nhau. Cờ này để chạy ablation, không phải cấu hình mặc định nên dùng.
 
@@ -593,13 +455,14 @@ class AblationConfig(BaseModel):
     early_stop: bool = False   # → "w/o early stop"
 ```
 
-**Lưu ý:** đường dẫn output không phân biệt theo cờ ablation (chỉ phân biệt theo
-`method`) — nếu muốn giữ kết quả của nhiều lần chạy ablation khác nhau, đổi tạm
-`general.scale` (ví dụ `"125m-no-removal"`) trước khi chạy, hoặc backup thư mục
-`outputs/` sau mỗi lần.
+**Lưu ý:** đường dẫn output phân biệt theo `{dataset}/{model}/{method}` — KHÔNG
+phân biệt theo cờ ablation. Chạy nhiều lần ablation trên cùng model + method thì
+lần sau ghi đè lần trước, nên hãy backup thư mục `outputs/` sau mỗi lần chạy.
 
-`scale` là chuỗi tự do nên không phải khai báo ở đâu cả — đặt xong chạy luôn, và
-`/evaluate?model=125m-no-removal` tra lại được ngay.
+Nhãn `{model}` suy ra từ `encoder.model_name` (bỏ phần org, hạ chữ thường), nên
+đổi model là kết quả tự vào thư mục khác. Tra lại bằng
+`/evaluate?model=sgpt-1.3b-weightedmean-msmarco-specb-bitfit`, hoặc gõ luôn tên
+HuggingFace đầy đủ — endpoint tự chuẩn hoá về cùng nhãn đó.
 
 ## 8. Chạy API Service
 
@@ -633,7 +496,7 @@ thư mục lúc KHỞI ĐỘNG mới là thứ quyết định `sys.path`; chạ
 **Service nạp lười (lazy).** Khởi động KHÔNG encode corpus nào — vì các endpoint tra
 cứu số liệu không cần model. Encoder/LLM/embeddings chỉ được nạp ở lần gọi
 `/retrieve` đầu tiên của từng dataset, nên **request `/retrieve` đầu tiên sẽ chậm**
-(nạp SGPT; và nếu chưa có cache `outputs/{dataset}_{scale}_embeddings.pt` thì phải
+(nạp SGPT; và nếu chưa có cache `outputs/{dataset}_{model}_embeddings.pt` thì phải
 encode cả corpus — BirdUnion mất vài phút trên CPU). Các request sau nhanh bình
 thường. `GET /health` cho biết trạng thái:
 
@@ -653,7 +516,7 @@ hiện trong `general.top_k`.
 | Tham số | Mặc định | Giá trị |
 |---|---|---|
 | `dataset` | `spider` | `spider`, `bird` |
-| `model` | `general.scale` của server | Tên thư mục scale trong `outputs/` — chuỗi tự do (nhận cả `SGPT-125M`) |
+| `model` | nhãn suy ra từ `encoder.model_name` của server | Tên thư mục model trong `outputs/` (nhận cả tên HuggingFace đầy đủ) |
 | `method` | `murre` | `murre`, `single_hop`, `crush` |
 | `k` | `5` | Một hoặc nhiều: `?k=3&k=5&k=10` |
 
@@ -689,7 +552,7 @@ Các trường hợp lỗi:
 | Chưa chạy tổ hợp đó | `404` | Kèm luôn lệnh cần chạy trước |
 | `k` > `retrieved_depth` | `400` | Chặn để không trả về `0.0` sai lệch âm thầm |
 | `dataset`/`method` sai | `400` | Kèm danh sách giá trị hợp lệ |
-| `model` (scale) sai | `404` | Kèm đường dẫn đã tìm + các scale đang có trên đĩa |
+| `model` sai | `404` | Kèm đường dẫn đã tìm + các nhãn model đang có trên đĩa |
 
 ### 8c. `POST /pipeline/run` — CHẠY pipeline qua API
 
@@ -697,8 +560,8 @@ Các trường hợp lỗi:
 chạy đó: nó ghi `paths.result` + `paths.score`, chạy xong là `/evaluate` tra được
 ngay với mọi k. Tương đương `run_batch` trong `main.py`, nhưng gọi được qua HTTP.
 
-Body (`PipelineRunRequest`) — **không có `model`**: scale encoder do server quyết
-định, lấy từ `general.scale`. Gửi thừa field sẽ nhận `422` (`extra="forbid"`).
+Body (`PipelineRunRequest`) — **không có `model`**: encoder do server quyết định,
+lấy từ `encoder.model_name`. Gửi thừa field sẽ nhận `422` (`extra="forbid"`).
 
 | Trường | Mặc định | Ý nghĩa |
 |---|---|---|
@@ -760,12 +623,9 @@ tự cập nhật theo.
 
 ```
 outputs/
-├── {dataset}_{scale}_embeddings.pt                 ← Cache embeddings dùng chung
+├── {dataset}_{model}_embeddings.pt                 ← Cache embeddings dùng chung
 ├── logs/murre.log                                  ← LoggingConfig.log_to_file = True
-└── {dataset}/{scale}/{method}/
-    ├── turn0/dev.json                              ← Kết quả Hop-0 (mọi method)
-    ├── rewrite/outputs/turn{hop}/dev.{beam}.json    ← Chỉ method=murre
-    ├── turn{hop}/dev.{beam}.json                    ← Chỉ method=murre
+└── {dataset}/{model}/{method}/
     └── result/turn{max_hop}/
         ├── dev.json         ← Kết quả cuối cùng (ranked schemas)
         ├── score.json       ← Metrics recall@K / complete_recall@K
@@ -780,7 +640,7 @@ outputs/
    thư mục gốc `MURRE/` (nơi có `config.yaml`) — **không phải** `src/`.
 3. Nếu chạy qua Terminal tích hợp của PyCharm mà vẫn gặp `ModuleNotFoundError:
    No module named 'config'`, tạo file `.pth` trong venv trỏ tới `src/` (xem mục
-   11), hoặc chạy bằng `python -m main` / `python -m steps.embed` (có `-m`, không
+   11), hoặc chạy bằng `python -m main` / `python -m steps.infer` (có `-m`, không
    có đuôi `.py`) sau khi `set PYTHONPATH=src`.
 
 ## 11. Troubleshooting
@@ -829,20 +689,11 @@ Cách lâu dài: mở Environment Variables của Windows, đưa các đường 
 `Anaconda3`, `Anaconda3\Scripts`, `Anaconda3\condabin` xuống **cuối** biến `PATH`
 (không xóa — Anaconda vẫn dùng được bình thường, chỉ không được ưu tiên tìm trước).
 
-**`FileNotFoundError: Không tìm thấy file JSON trong: .../turn{N}`** (khi chạy
-`steps.rewrite --hop N`)
-→ Chưa chạy `steps.retrieve --hop N --beam b` cho hop đó. `rewrite --hop N` đọc thư
-mục `turn{N}/`, nên phải retrieve xong hop N trước. Xem sơ đồ phụ thuộc ở mục 5b.
-
-**`ValueError: File ... không có bảng nào trong trường 'retrieved'`** (khi chạy
-`steps.rewrite`)
-→ Thư mục đầu vào chứa file *đã viết lại* (`rewrite/outputs/turn{N}/`) chứ không phải
-kết quả retrieve. File rewrite không có trường `retrieved`. Đúng thư mục đầu vào phải
-là `turn{N}/` — xem bảng "Tham số của từng bước" ở mục 5b.
-
-> Trước đây lỗi này hiện ra dưới dạng `KeyError: 'retrieved'`. Từ khi các file JSON
-> có model riêng (`src/models/records.py`), `steps/rewrite.py` kiểm tra ngay lúc đọc
-> file và báo rõ nguyên nhân kèm cách sửa.
+**`FileNotFoundError: .../result/turn{max_hop}/dev.json`** (khi chạy
+`python -m steps.infer`)
+→ Chưa có file kết quả để sinh SQL. Chạy `python -m main` (mode `batch`) hoặc
+`POST /pipeline/run` trước; `run_batch()` với `method: murre` đã tự gọi `infer` ở cuối
+nên bình thường không cần chạy tay bước này.
 
 **`FileNotFoundError: config.yaml`**
 → Working Directory đang không phải thư mục gốc `MURRE/`. Với PyCharm, sửa trong

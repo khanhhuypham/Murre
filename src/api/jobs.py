@@ -34,7 +34,7 @@ def run_job(state: State, job_id: str, req: PipelineRunRequest) -> None:
         job.total = total
 
     try:
-        # Khong truyen scale: giu nguyen general.scale cua server (xem
+        # Khong truyen model: giu nguyen encoder.slug cua server (xem
         # PipelineRunRequest).
         run_pipeline(
             dataset=req.dataset,
@@ -46,7 +46,7 @@ def run_job(state: State, job_id: str, req: PipelineRunRequest) -> None:
         # lệch số nhau, và cũng xác nhận file vừa ghi đọc được thật.
         job.result = evaluate_run(
             dataset=req.dataset,
-            model=cfg.general.scale,
+            model=cfg.encoder.slug,
             method=req.method,
             k=req.k,
         )
