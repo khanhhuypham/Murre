@@ -35,9 +35,9 @@ MURRE/                               ← Thư mục gốc (Working Directory khi
 │   ├── config.py                    ← Settings + MẶC ĐỊNH của general/pipeline/paths/
 │   │                                  logging/api/run_option (xem mục 3)
 │   ├── main.py                      ← Điểm vào pipeline (python -m main)
-│   ├── server.py                    ← Điểm vào API (uvicorn server:app) — mục 8
+│   ├── server.py                    ← Điểm vào API: tạo FastAPI, lifespan, gắn
+│   │                                  router (uvicorn server:app) — mục 8
 │   ├── api/                         ← REST service, không có endpoint ở ngoài
-│   │   ├── app.py                   ← Tạo FastAPI, lifespan, gắn router
 │   │   ├── dependencies.py          ← Nạp lười encoder/LLM/embeddings theo dataset
 │   │   ├── evaluator.py             ← evaluate_run(): tính metric từ file kết quả
 │   │   ├── jobs.py                  ← Thân một job chạy pipeline trong thread riêng
@@ -477,8 +477,8 @@ Xem docs tại `http://localhost:8000/docs`. Không cần `--reload` thì chạy
 thư mục lúc KHỞI ĐỘNG mới là thứ quyết định `sys.path`; chạy từ gốc project sẽ nhận
 `ModuleNotFoundError: No module named 'server'`.
 
-`server.py` chỉ có đúng một dòng `from api.app import app` — mọi endpoint nằm trong
-`src/api/`. Thư mục `api/` là namespace package (không có `__init__.py`, giống
+`server.py` tạo FastAPI app và gắn router — mọi endpoint nằm trong
+`src/api/routers/`. Thư mục `api/` là namespace package (không có `__init__.py`, giống
 `core/`, `methods/`, `schemas/`, `utils/`) nên uvicorn cần một module phẳng như
 `server.py` để nạp, thay vì trỏ thẳng vào package.
 
@@ -607,10 +607,10 @@ trực tiếp trong script Python, không cần chạy API (`from api.evaluator 
 `src/api/` chia theo vai trò: `routers/*.py` chỉ khai báo endpoint và chuyển tiếp,
 phần làm việc thật nằm ở `dependencies.py` (nạp model), `evaluator.py` (tính metric),
 `jobs.py` (chạy pipeline nền). Thêm nhóm endpoint mới thì tạo file trong `routers/`
-rồi `include_router` trong `api/app.py`.
+rồi `include_router` trong `src/server.py`.
 
 Trạng thái dùng chung (encoder, LLM, dataset đã nạp, danh sách job) nằm trong
-`app.state`, khởi tạo ở `api/app.py::lifespan`; router lấy qua `request.app.state`
+`app.state`, khởi tạo ở `server.py::lifespan`; router lấy qua `request.app.state`
 nên không file nào phải import ngược lại `app`.
 
 Model request/response của API nằm riêng trong `src/schemas/` (`retrieve.py`,

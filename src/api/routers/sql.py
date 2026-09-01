@@ -14,7 +14,7 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException, Request
 
-from api.dependencies import LoadedDataset, available_datasets, ensure_dataset
+from api.dependencies import LoadedDataset, available_datasets, load_dataset_once
 from core.llm import LLMGenerator
 from methods.murre import build_sql
 from models.retrieval import RetrievedTable
@@ -42,7 +42,7 @@ async def generate_sql(payload: SqlRequest, request: Request) -> SqlResponse:
         state.llm = await asyncio.to_thread(LLMGenerator)
     llm: LLMGenerator = state.llm
 
-    ds: LoadedDataset = await ensure_dataset(state, payload.dataset)
+    ds: LoadedDataset = await load_dataset_once(state, payload.dataset)
 
     # Cả retrieve lẫn gọi LLM đều blocking → đẩy sang thread để không chẹn event loop.
     tables: List[RetrievedTable] = await asyncio.to_thread(

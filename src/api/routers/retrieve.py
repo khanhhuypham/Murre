@@ -5,7 +5,7 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException, Request
 
-from api.dependencies import LoadedDataset, available_datasets, ensure_dataset
+from api.dependencies import LoadedDataset, available_datasets, load_dataset_once
 from schemas.retrieve import RetrieveRequest, TableResult
 
 router = APIRouter(tags=["retrieve"])
@@ -26,7 +26,7 @@ async def retrieve_tables(payload: RetrieveRequest, request: Request) -> List[Ta
     try:
         # Bình thường dataset đã được warmup_datasets() nạp sẵn lúc khởi động →
         # trả về ngay. Chỉ tốn thời gian nạp nếu preload bị tắt hoặc lần nạp sẵn lỗi.
-        ds: LoadedDataset = await ensure_dataset(request.app.state, payload.dataset)
+        ds: LoadedDataset = await load_dataset_once(request.app.state, payload.dataset)
         results = ds.retriever.run(
             question=payload.question, corpus=ds.corpus, schema_embeddings=ds.embs,
         )

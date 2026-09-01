@@ -240,9 +240,6 @@ class ApiConfig(BaseModel):
     # false → nạp lười ở /retrieve đầu tiên; lên nhanh nhưng KHÔNG bảo đảm gì.
     # (xem api/dependencies.py::warmup_datasets)
     preload: bool = True
-    # Rỗng = MỌI dataset có tables.json. Chỉ định (["spider"]) để khỏi chờ encode
-    # dataset không dùng tới.
-    preload_datasets: List[str] = []
 
 
 class RunOptionConfig(BaseModel):
