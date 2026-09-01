@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Type, TypeVar
+from typing import Any, List, Type, TypeVar
 
 from fastapi import HTTPException
 
 from config import cfg, model_slug
 from enums import BaseStrEnum, Dataset, Method
+from models.metrics import MetricScores
 from models.records import ResultRecord
 from schemas.evaluate import EvalResult
 from utils.metrics import compute_res
@@ -110,13 +111,13 @@ def evaluate_run(
             ),
         )
 
-    metrics: Dict[str, Dict[int, float]] = compute_res(top_k=[k], data=data)
+    metrics: MetricScores = compute_res(top_k=[k], data=data)
     return EvalResult(
         dataset=ds,
         method=mt,
         k=k,
-        recall=round(metrics["recall"][k] * 100, 2),
-        complete_recall=round(metrics["complete_recall"][k] * 100, 2),
+        recall=round(metrics.recall_at(k) * 100, 2),
+        complete_recall=round(metrics.complete_recall_at(k) * 100, 2),
         num_questions=len(data),
         retrieved_depth=depth,
         result_file=result_file,

@@ -54,7 +54,7 @@ class RetrievedTable(NamedTuple):
     """Một bảng do methods/*.run() trả về — dùng trong bộ nhớ, không ghi thẳng ra file.
 
     Cả 3 method (murre / single_hop / crush) đều trả về List[RetrievedTable]; đây
-    chính là giao diện chung mà methods/factory.build_retriever() hứa hẹn.
+    chính là giao diện chung mà methods/build.build_retriever() hứa hẹn.
     """
 
     # Chuỗi schema "db_id.table(col1, col2, ...)"

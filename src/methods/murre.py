@@ -1,12 +1,43 @@
-"""MURRE in-process: retrieve đa hop bằng beam search → xếp hạng bảng → sinh SQL.
+"""MURRE: retrieve bảng đa hop bằng beam search → xếp hạng bảng → sinh SQL.
 
-    hop 0      retrieve toàn corpus, giữ top_k_pool làm pool   → _retrieve()
-    hop 1..H   Completing Tables (LLM) → retrieve trong pool
-               → mở rộng beam → tỉa top-B                      → run()
-    scoring    Score_Path → Score_Table                        → _rank()
-    sinh SQL   top-K bảng → prompt zero-shot → LLM             → generate_sql()
+VÒNG ĐỜI MỘT CÂU HỎI
+--------------------
+    turn 0      _retrieve() trên toàn corpus bằng câu hỏi gốc, lấy 100 bảng.
+                100 bảng này thành POOL — mọi turn sau chỉ tìm trong đây.
 
-`run()` cùng giao diện với các method khác (methods/factory.py).
+    turn 1..H-1 lặp 3 bước:
+                  a. _grow()    mỗi nhánh nở ≤3B ứng viên, gộp lại, giữ top-B
+                  b. _removal() LLM xoá thông tin đã có khỏi câu hỏi
+                                → nếu LLM báo "đủ rồi" thì dừng cả câu hỏi
+                  c. _retrieve() lại trong pool bằng câu vừa viết lại
+
+    cuối        _rank() chấm điểm mọi ứng viên của turn cuối → danh sách xếp hạng
+
+TỪ VỰNG
+-------
+    Hit           một bảng retrieve được (schema + similarity + vị trí corpus)
+    RetrievalPath một đường đi: dãy bảng đã qua + similarity từng bước (Eq D.1)
+    Beam          một nhánh đang sống: đường đi + toàn bộ ứng viên nó retrieve được
+    turn          danh sách Beam ở một hop. Turn 0 có 1 phần tử (đường đi rỗng),
+                  các turn sau có B phần tử.
+
+BÁM CODE TÁC GIẢ, KHÔNG BÁM CHỮ TRONG PAPER
+-------------------------------------------
+Ở 5 chỗ dưới đây, github.com/zhxlia/Murre làm khác paper. Ta theo CODE vì đó là
+bản đã sinh ra Bảng 2 — số chạy được mới so sánh trực tiếp được.
+
+    | Chỗ            | Paper viết              | Code làm — ta theo cái này      |
+    |----------------|-------------------------|---------------------------------|
+    | Chuẩn hoá      | Norm(s) = (s+1)/2 (App.C)| pos(s) = (s+2)/2               |
+    | Phạm vi hop ≥1 | mọi bảng (§3.3)         | khoá trong pool 100 của turn 0  |
+    | Nhánh mỗi beam | B × B (§3.3)            | 3B × B rồi tỉa còn B            |
+    | Câu cho Removal| luôn câu gốc (§3.4)     | câu viết lại của hop trước      |
+    | Chấm điểm bảng | bảng trên path (Alg.1)  | mọi ứng viên của turn cuối      |
+
+Nguồn: retrieve/retrieve.py, rewrite/sample.py, rewrite/score.py, slurm/run.sh.
+Công thức điểm nằm ở utils/scoring.py.
+
+`run()` cùng giao diện với các method khác (methods/build.py).
 Chạy thử một câu:  python -m methods.murre
 """
 from __future__ import annotations
@@ -22,45 +53,53 @@ from core.encoder import SGPTEncoder
 from core.llm import LLMGenerator
 from core.rewriter import QueryRewriter
 from models.retrieval import RetrievedTable
-from utils import logger
-from utils.scoring import path_score
+from utils import logger, scoring
 
 
+# =============================================================================
+# Kiểu dữ liệu
+# =============================================================================
 @dataclass(frozen=True)
 class Hit:
-    """Một bảng retrieve được: schema, cosine similarity, vị trí trong corpus."""
-
+    """Một bảng retrieve được."""
     schema: str
     similarity: float
-    index: int
+    index: int  # vị trí trong corpus
 
 
 @dataclass(frozen=True)
-class Path:
-    """Một beam: chuỗi bảng đã đi qua kèm similarity từng bước.
+class RetrievalPath:
+    """Path_h,b của paper (Equation D.1): dãy bảng đã đi qua + similarity từng bước.
 
-    `query`   : câu truy vấn cho hop kế tiếp.
-    `stopped` : LLM trả "None" → ngừng mở rộng, vẫn được chấm điểm.
+    `schemas[i]` và `sims[i]` luôn cùng độ dài và cùng thứ tự hop.
+    `query` là câu truy vấn đã dùng ở hop hiện tại — hop kế sẽ viết lại TỪ CÂU NÀY,
+    không phải từ câu hỏi gốc (xem bảng đối chiếu ở đầu file).
     """
 
     schemas: Tuple[str, ...]
     sims: Tuple[float, ...]
     query: str
-    stopped: bool = False
 
-    @property
-    def score(self) -> float:
-        """Score_Path = Π Norm(sim) dọc đường đi, tính trong log-space."""
-        return path_score(similarities=self.sims)
-
-    def extend(self, hit: Hit) -> "Path":
-        """Beam mới = beam này nối thêm `hit` vào cuối đường đi."""
-        return Path(
+    def extend(self, hit: Hit) -> "RetrievalPath":
+        """Đường đi mới = đường này nối thêm `hit` vào cuối."""
+        return RetrievalPath(
             schemas=self.schemas + (hit.schema,),
             sims=self.sims + (hit.similarity,),
             query=self.query,
-            stopped=False,
         )
+
+
+@dataclass(frozen=True)
+class Beam:
+    """Một nhánh đang sống: đường đi, kèm TOÀN BỘ ứng viên mà đường đi đó retrieve ra.
+
+    Giữ cả danh sách ứng viên vì hai bước dùng nó theo hai cách khác nhau:
+        _grow()  chỉ lấy 3B ứng viên đầu để nở nhánh
+        _rank()  dùng CẢ danh sách để chấm điểm bảng
+    """
+
+    path: RetrievalPath
+    candidates: List[Hit]
 
 
 class MurreRetriever:
@@ -90,6 +129,9 @@ class MurreRetriever:
         self.max_hop: int = max_hop if max_hop is not None else cfg.pipeline.max_hop
         self.top_k_pool: int = top_k_pool if top_k_pool is not None else cfg.pipeline.top_k_pool
 
+        # sample.py lấy `retrieved[:3*top_k]` với top_k = beam size.
+        self.expand_width: int = 3 * self.beam_size
+
         self.use_removal: bool = cfg.pipeline.ablation.removal
         self.use_early_stop: bool = cfg.pipeline.ablation.early_stop
 
@@ -103,7 +145,9 @@ class MurreRetriever:
                 )
             self.rewriter = QueryRewriter(llm=llm)
 
-    # -- §3.2 Retrieval ------------------------------------------------------
+    # =========================================================================
+    # Bước a — Retrieval (§3.3, Equation 3.1)
+    # =========================================================================
     @staticmethod
     def _subqueries(query: str) -> List[str]:
         """Tách câu truy vấn thành từng sub-query, mỗi dòng một cái.
@@ -118,81 +162,143 @@ class MurreRetriever:
         self,
         query: str,
         corpus: List[str],
-        embeddings: torch.Tensor,
-        pool: Optional[Sequence[int]] = None,
-        top_k: Optional[int] = None,
+        doc_embeddings: torch.Tensor,
+        top_k: int,
+        index_map: Optional[Sequence[int]] = None,
     ) -> List[Hit]:
-        """Top-k bảng theo cosine similarity, trong toàn corpus hoặc trong `pool`.
+        """Top-k bảng theo cosine similarity.
 
-        Nhiều sub-query → mỗi bảng lấy điểm cao nhất (max, không cộng/trung bình).
+            doc_embeddings : ma trận ĐÃ chuẩn hoá L2. Turn 0 truyền cả corpus, các
+                             turn sau truyền ma trận con của pool.
+            index_map      : ánh xạ hàng của ma trận con về chỉ số corpus.
+                             None = ma trận đầy đủ, hàng i chính là corpus[i].
+
+        Nhiều sub-query → mỗi bảng lấy điểm CAO NHẤT (max, không cộng/trung bình).
         """
         queries: List[str] = self._subqueries(query=query)
         q: torch.Tensor = F.normalize(
-            input=self.encoder.encode(texts=queries, is_query=True), p=2, dim=1
+            input=self.encoder.encode(texts=queries, is_query=True), p=2, dim=1,
         )
 
-        indices: List[int] = list(pool) if pool is not None else list(range(len(corpus)))
-        docs: torch.Tensor = F.normalize(input=embeddings[indices], p=2, dim=1)
-
         # [n_subquery, n_doc] → max theo sub-query → [n_doc]
-        sims: torch.Tensor = (q @ docs.T).amax(dim=0)
-        k: int = min(top_k or self.top_k_pool, sims.size(0))
-        values, positions = torch.topk(input=sims, k=k)
+        sims: torch.Tensor = (q @ doc_embeddings.T).amax(dim=0)
+        values, positions = torch.topk(input=sims, k=min(top_k, sims.size(0)))
+
+        def to_corpus_index(row: int) -> int:
+            return index_map[row] if index_map is not None else row
 
         return [
-            Hit(schema=corpus[indices[p]], similarity=float(v), index=indices[p])
+            Hit(schema=corpus[to_corpus_index(p)], similarity=float(v), index=to_corpus_index(p))
             for v, p in zip(values.tolist(), positions.tolist())
         ]
 
-    # -- §3.3 Completing Tables ---------------------------------------------
-    def _next_query(self, question: str, schemas: Sequence[str]) -> Tuple[str, bool]:
-        """Sinh câu truy vấn cho hop kế từ câu hỏi gốc + các bảng đã có.
+    # =========================================================================
+    # Bước b — Removal / Completing Tables (§3.4)
+    # =========================================================================
+    def _next_query(self, query: str, schemas: Sequence[str]) -> Tuple[str, bool]:
+        """Nhờ LLM xoá thông tin của `schemas` khỏi `query`.
 
-        Trả về (câu truy vấn, có early stop hay không). Luôn dùng câu hỏi gốc,
-        không dùng câu viết lại ở hop trước, để nhiễu không cộng dồn.
+        Trả về (câu truy vấn cho hop kế, LLM có báo "đủ bảng rồi" hay không).
+
+        `query` là câu của HOP HIỆN TẠI — tức câu đã viết lại ở hop trước, không
+        phải câu hỏi gốc. Xem bảng đối chiếu ở đầu file.
         """
         if not self.use_removal:
             # Ablation w/o removal: nối câu hỏi với bảng đã có, không gọi LLM.
             joined: str = " | ".join(schemas)
-            return (f"{question} | {joined}" if joined else question), False
+            return (f"{query} | {joined}" if joined else query), False
 
         assert self.rewriter is not None
-        out: str = self.rewriter.rewrite(question=question, retrieved_schemas=list(schemas)).strip()
+        out: str = self.rewriter.rewrite(question=query, retrieved_schemas=list(schemas)).strip()
         stopped: bool = self.use_early_stop and QueryRewriter.is_early_stop(rewrite_output=out)
         return out, stopped
 
-    # -- §3.5 Scoring --------------------------------------------------------
-    @staticmethod
-    def _rank(beams: Sequence[Path], hop0: Sequence[Hit]) -> List[RetrievedTable]:
-        """Xếp hạng bảng: Score_Table(t) = max Score_Path trong các beam giữ lại.
+    # =========================================================================
+    # Ba bước của một hop
+    # =========================================================================
+    def _grow(self, turn: Sequence[Beam]) -> List[RetrievalPath]:
+        """Nở nhánh rồi tỉa: mỗi beam sinh ≤3B đường đi mới, gộp lại, giữ top-B.
 
-        Chỉ tính trên beam đã chọn — thêm ứng viên hop 0 như đường độ dài 1 thì
-        đường ngắn luôn thắng và multi-hop mất tác dụng.
-
-        Sau đó nối đuôi dự phòng (ngoài paper, để đủ recall@20): các bảng còn lại
-        của pool hop 0, giữ nguyên thứ tự hop 0, luôn xếp dưới bảng có đường đi.
+        Bỏ qua bảng đã nằm trên chính đường đi đó — một đường không đi lại bảng cũ.
         """
-        best: Dict[str, float] = {}
-        for path in beams:
-            score: float = path.score
-            for schema in path.schemas:
-                if score > best.get(schema, float("-inf")):
-                    best[schema] = score
+        grown: List[RetrievalPath] = [
+            beam.path.extend(hit=hit)
+            for beam in turn
+            for hit in beam.candidates[: self.expand_width]
+            if hit.schema not in beam.path.schemas
+        ]
+        grown.sort(key=lambda p: scoring.pruning_score(similarities=p.sims), reverse=True)
+        return grown[: self.beam_size]
 
-        ranked: List[RetrievedTable] = [
+    def _removal(
+        self,
+        paths: Sequence[RetrievalPath],
+        corpus: List[str],
+        pool_docs: torch.Tensor,
+        pool: Sequence[int],
+    ) -> Optional[List[Beam]]:
+        """Removal + retrieve cho từng đường đi → turn kế tiếp.
+
+        Trả về None khi LLM báo dừng sớm. Early stop là quyết định của CẢ CÂU HỎI
+        chứ không của riêng một nhánh: score.py đặt end_turn[câu] = turn-1 ngay khi
+        BẤT KỲ nhánh nào báo dừng, rồi chấm điểm bằng turn TRƯỚC đó. Nên trả None là
+        đủ — chỗ gọi giữ nguyên turn hiện tại và đem đi chấm điểm.
+        """
+        next_turn: List[Beam] = []
+        for path in paths:
+            query, stopped = self._next_query(query=path.query, schemas=path.schemas)
+            if stopped:
+                return None
+            next_turn.append(Beam(
+                path=replace(path, query=query),
+                candidates=self._retrieve(
+                    query=query,
+                    corpus=corpus,
+                    doc_embeddings=pool_docs,
+                    top_k=self.top_k_pool,
+                    index_map=pool,
+                ),
+            ))
+        return next_turn
+
+    # =========================================================================
+    # Bước cuối — Score (§3.5)
+    # =========================================================================
+    @staticmethod
+    def _rank(turn: Sequence[Beam], pool_hits: Sequence[Hit]) -> List[RetrievedTable]:
+        """Chấm điểm MỌI ứng viên của turn cuối, không chỉ các bảng nằm trên đường đi.
+
+        Với mỗi beam và mỗi ứng viên `x` mà beam đó retrieve được, điểm là
+        `scoring.table_score(x, đường đi)` — tức chấm x như thể nối nó vào cuối
+        đường đi. Điểm đó gán cho CẢ `x` LẪN mọi bảng trên đường đi, lấy max nếu
+        một bảng được chấm nhiều lần.
+
+        Bảng nào thuộc pool mà không lần nào được chấm thì giữ 0.0 và tự rơi xuống
+        đáy, vì log(pos(sim)) > 0 với mọi sim > 0.
+
+        `pool_hits` (= kết quả turn 0) quyết định TẬP BẢNG được xếp hạng: mọi ứng
+        viên ở các turn sau đều lấy từ pool này nên không có bảng nào lọt ra ngoài.
+        """
+        best: Dict[str, float] = {hit.schema: 0.0 for hit in pool_hits}
+
+        for beam in turn:
+            for hit in beam.candidates:
+                score: float = scoring.table_score(
+                    candidate_similarity=hit.similarity,
+                    path_similarities=beam.path.sims,
+                )
+                for schema in (hit.schema, *beam.path.schemas):
+                    if score > best[schema]:
+                        best[schema] = score
+
+        return [
             RetrievedTable(schema=schema, score=score)
             for schema, score in sorted(best.items(), key=lambda kv: kv[1], reverse=True)
         ]
 
-        # Đuôi: giữ nguyên thứ hạng hop 0, dịch điểm xuống dưới bảng thấp nhất đang có
-        # để thứ tự trong file kết quả đọc được như một danh sách xếp hạng liền mạch.
-        floor: float = min(best.values()) if best else 0.0
-        for rank, hit in enumerate(hop0, start=1):
-            if hit.schema not in best:
-                ranked.append(RetrievedTable(schema=hit.schema, score=floor - rank))
-        return ranked
-
-    # -- Toàn bộ pipeline ----------------------------------------------------
+    # =========================================================================
+    # Ráp lại
+    # =========================================================================
     def run(
         self,
         question: str,
@@ -200,71 +306,73 @@ class MurreRetriever:
         schema_embeddings: torch.Tensor,
         verbose: bool = False,
     ) -> List[RetrievedTable]:
-        """Chạy đủ pipeline retrieve cho MỘT câu hỏi → bảng xếp theo Score_Table."""
-        # ── Hop 0: toàn corpus ───────────────────────────────────────────────
-        hop0: List[Hit] = self._retrieve(
-            query=question, corpus=corpus, embeddings=schema_embeddings,
+        """Chạy đủ pipeline retrieve cho MỘT câu hỏi → bảng xếp theo điểm giảm dần."""
+        # Chuẩn hoá corpus MỘT lần cho cả câu hỏi thay vì mỗi lần _retrieve.
+        docs: torch.Tensor = F.normalize(input=schema_embeddings, p=2, dim=1)
+
+        # --- turn 0: toàn corpus, câu hỏi GỐC không tabulate (Appendix K) ----
+        pool_hits: List[Hit] = self._retrieve(
+            query=question,
+            corpus=corpus,
+            doc_embeddings=docs,
+            top_k=self.top_k_pool
         )
-        if not hop0:
+        if not pool_hits:
             return []
 
-        pool: List[int] = [h.index for h in hop0]
+        # Pool cố định cho mọi turn sau. run.sh truyền `--last_retrieved_file turn0`
+        # cho CẢ hop 2 lẫn hop 3, nên luôn là kết quả turn 0, không phải turn trước.
+        pool: List[int] = [hit.index for hit in pool_hits]
+        pool_docs: torch.Tensor = docs[pool]
 
-        # §3.4: chỉ top-B ứng viên hop 0 trở thành beam khởi đầu.
-        beams: List[Path] = [
-            Path(schemas=(h.schema,), sims=(h.similarity,), query=question)
-            for h in hop0[: self.beam_size]
-        ]
-
+        turn: List[Beam] = [Beam(
+            path=RetrievalPath(schemas=(), sims=(), query=question),
+            candidates=pool_hits,
+        )]
         if verbose:
-            logger.info(f"[MURRE] Hop 0: pool {len(pool)} bảng | beam {len(beams)}")
-            for h in hop0[:3]:
-                logger.info(f"         {h.similarity:.4f}  {h.schema}")
+            self._log_turn_0(pool_hits=pool_hits)
 
-        # ── Hop 1..max_hop ───────────────────────────────────────────────────
-        for hop in range(1, self.max_hop + 1):
-            active: List[Path] = [b for b in beams if not b.stopped]
-            if not active:
+        # --- turn 1 .. max_hop-1 --------------------------------------------
+        # max_hop ĐẾM CẢ turn 0: max_hop=3 → turn 0, 1, 2, tức chỉ 2 vòng ở đây.
+        # Table 5 của paper cũng vậy — "max hop 1" nghĩa là single-hop.
+        for hop in range(1, self.max_hop):
+            paths: List[RetrievalPath] = self._grow(turn=turn)
+            if not paths:
+                break
+
+            next_turn: Optional[List[Beam]] = self._removal(
+                paths=paths, corpus=corpus, pool_docs=pool_docs, pool=pool,
+            )
+            if next_turn is None:
                 if verbose:
-                    logger.info(f"[MURRE] Hop {hop}: mọi beam đã dừng sớm → kết thúc")
+                    logger.info(f"[MURRE] Turn {hop}: early stop → chấm bằng turn {hop - 1}")
                 break
 
-            candidates: List[Path] = []
-            for i, beam in enumerate(active):
-                query, stopped = self._next_query(question=question, schemas=beam.schemas)
-
-                if stopped:
-                    # Đường đi đủ bảng: đóng băng, vẫn giữ để chấm điểm.
-                    beams = [replace(b, stopped=True) if b is beam else b for b in beams]
-                    if verbose:
-                        logger.info(f"[MURRE] Hop {hop} beam {i}: early stop")
-                    continue
-
-                hits: List[Hit] = self._retrieve(
-                    query=query, corpus=corpus, embeddings=schema_embeddings, pool=pool,
-                )
-                grown: Path = replace(beam, query=query)
-                candidates.extend(
-                    grown.extend(hit=h) for h in hits if h.schema not in beam.schemas
-                )
-
-            if not candidates:
-                break
-
-            candidates.sort(key=lambda p: p.score, reverse=True)
-            beams = candidates[: self.beam_size] + [b for b in beams if b.stopped]
-
+            turn = next_turn
             if verbose:
-                logger.info(f"[MURRE] Hop {hop}: {len(candidates)} ứng viên → giữ {len(beams)} beam")
+                logger.info(f"[MURRE] Turn {hop}: giữ {len(turn)} nhánh")
 
-        results: List[RetrievedTable] = self._rank(beams=beams, hop0=hop0)
+        results: List[RetrievedTable] = self._rank(turn=turn, pool_hits=pool_hits)
         if verbose:
-            logger.info(f"[MURRE] Xong: {len(results)} bảng | top-3:")
-            for r in results[:3]:
-                logger.info(f"         {r.score:.4f}  {r.schema}")
+            self._log_results(results=results)
         return results
 
-    # -- Bước cuối: sinh SQL -------------------------------------------------
+    # -- Log ------------------------------------------------------------------
+    @staticmethod
+    def _log_turn_0(pool_hits: Sequence[Hit]) -> None:
+        logger.info(f"[MURRE] Turn 0: pool {len(pool_hits)} bảng")
+        for hit in pool_hits[:3]:
+            logger.info(f"  {hit.similarity:.4f}  {hit.schema}")
+
+    @staticmethod
+    def _log_results(results: Sequence[RetrievedTable]) -> None:
+        logger.info(f"[MURRE] Xong: {len(results)} bảng | top-3:")
+        for table in results[:3]:
+            logger.info(f"   {table.score:.4f}  {table.schema}")
+
+    # =========================================================================
+    # Bước cuối cùng của paper — sinh SQL
+    # =========================================================================
     def generate_sql(
         self,
         question: str,

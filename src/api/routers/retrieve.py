@@ -24,11 +24,12 @@ async def retrieve_tables(payload: RetrieveRequest, request: Request) -> List[Ta
         )
 
     try:
-        # Bình thường dataset đã được warmup_datasets() nạp sẵn lúc khởi động →
-        # trả về ngay. Chỉ tốn thời gian nạp nếu preload bị tắt hoặc lần nạp sẵn lỗi.
         ds: LoadedDataset = await load_dataset_once(request.app.state, payload.dataset)
         results = ds.retriever.run(
-            question=payload.question, corpus=ds.corpus, schema_embeddings=ds.embs,
+            question=payload.question,
+            corpus=ds.corpus,
+            schema_embeddings=ds.embs,
+            verbose=True
         )
         return [
             TableResult(rank=i + 1, table_schema=r.schema, score=r.score)

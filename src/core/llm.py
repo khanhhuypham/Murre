@@ -10,11 +10,12 @@
 from __future__ import annotations
 
 import socket
-from typing import Optional, Tuple
+import subprocess
+from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 import httpx
-from openai import APIConnectionError, APITimeoutError, OpenAI
+from openai import APIConnectionError, APITimeoutError, NotFoundError, OpenAI
 from openai.types.chat import ChatCompletion
 
 from config import LLMProfileConfig, cfg, get_llm_profile
@@ -108,13 +109,25 @@ class LLMGenerator:
                 f"Lỗi gốc: {e}"
             ) from e
 
-    def generate(self, prompt: str, temperature: Optional[float] = None) -> str:
+    def generate(
+        self,
+        prompt: str,
+        temperature: Optional[float] = None,
+        stop: Optional[List[str]] = None,
+        max_tokens: int = 100,
+    ) -> str:
         """
         Gửi prompt đến LLM và trả về phản hồi dạng chuỗi.
 
         Tham số:
             prompt      : nội dung prompt gửi đến LLM
             temperature : nhiệt độ sinh text (None → dùng giá trị trong config)
+            stop        : chuỗi dừng. Prompt của paper là few-shot dạng COMPLETION
+                          ("Question: ... / Database: ... / Completing Tables:"), model
+                          phải điền nốt MỘT khối rồi ngừng. Không truyền stop thì model
+                          instruct sẽ sinh tiếp sang khối "Question:" kế và tự trả lời
+                          lại chính các ví dụ few-shot.
+            max_tokens  : trần token sinh ra.
 
         Trả về:
             Chuỗi phản hồi từ LLM, đã strip khoảng trắng
@@ -135,7 +148,8 @@ class LLMGenerator:
                 model=self.model_name,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=temp,
-                max_tokens=100,
+                max_tokens=max_tokens,
+                stop=stop,
             )
             return response.choices[0].message.content.strip()
 
@@ -153,12 +167,59 @@ class LLMGenerator:
                 ) from e
             raise
 
+        except NotFoundError as e:
+            # Server SỐNG nhưng không có model này — lỗi cấu hình, không phải lỗi mạng.
+            # Endpoint đang chạy nên hỏi luôn nó có sẵn model nào, đỡ phải đi tra.
+            if self.is_local:
+                raise RuntimeError(
+                    f"Endpoint đang chạy nhưng KHÔNG CÓ model '{self.model_name}'.\n"
+                    f"{self._available_models_hint()}"
+                    f"  → Sửa llm.active_profile trong config.yaml sang một model có sẵn,\n"
+                    f"    hoặc tải model này về: {self._pull_command()}\n"
+                    f"Lỗi gốc: {e}"
+                ) from e
+            raise
+
         except Exception as e:
             if self.is_local:
                 raise RuntimeError(
                     f"Không gọi được model local '{self.model_name}'.\n"
                     f"  1. Ollama đã chạy chưa? → ollama serve\n"
-                    f"  2. Model đã pull chưa? → ollama pull {self.model_name}\n"
+                    f"  2. Model đã pull chưa? → {self._pull_command()}\n"
                     f"Lỗi gốc: {e}"
                 ) from e
             raise
+
+    # -- Gợi ý khi cấu hình sai model -----------------------------------------
+    def _available_models_hint(self) -> str:
+        """Liệt kê model mà endpoint local đang có. Hỏi được thì hỏi, không thì thôi."""
+        host, port = self._endpoint()
+        try:
+            resp = httpx.get(f"http://{host}:{port}/api/tags", timeout=3.0)
+            names: List[str] = [m["name"] for m in resp.json().get("models", [])]
+        except Exception:
+            return ""  # không hỏi được thì im, đừng làm nhiễu lỗi gốc
+
+        if not names:
+            return "  Endpoint chưa có model nào.\n"
+        return "  Model đang có: " + ", ".join(sorted(names)) + "\n"
+
+    def _pull_command(self) -> str:
+        """Lệnh pull ĐÚNG với cách Ollama đang chạy.
+
+        Ollama chạy trong Docker thì `ollama pull` trần trên máy host không có tác
+        dụng (thường còn không có lệnh `ollama`) — phải gọi xuyên vào container.
+        """
+        try:
+            out = subprocess.run(
+                ["docker", "ps", "--filter", "ancestor=ollama/ollama",
+                 "--format", "{{.Names}}"],
+                capture_output=True, text=True, timeout=3.0,
+            ).stdout.strip()
+        except Exception:
+            out = ""
+
+        container: str = out.splitlines()[0].strip() if out else ""
+        if container:
+            return f"docker exec {container} ollama pull {self.model_name}"
+        return f"ollama pull {self.model_name}"

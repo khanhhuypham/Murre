@@ -5,7 +5,7 @@
                         và run_batch() đều gọi hàm này.
     run_batch()         Option 2 — run_pipeline() + sinh SQL (murre).
 
-Cả 3 method dùng chung một đường, retriever dựng qua methods/factory.py.
+Cả 3 method dùng chung một đường, bộ retrieval ráp qua methods/build.py.
 
 `cfg` là biến toàn cục của process nên mỗi lúc chỉ cho phép MỘT lần chạy
 (_RUN_LOCK); trong lúc chạy, /retrieve cũng thấy cfg đã bị ghi đè.
@@ -15,18 +15,16 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
-
-import torch
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from config import cfg
-from core.corpus import prepare
-from core.llm import LLMGenerator
 from dataset.loader import load_dev, resolve_question
 from enums import Dataset, Method
-from methods.factory import RetrieverType, build_retriever
+from methods.build import LoadedDataset, build_dataset
 from models.errors import AppError
+from models.metrics import MetricScores
 from models.records import ResultRecord
 from models.retrieval import RetrievedTable
 from utils import logger
@@ -73,27 +71,6 @@ def override_cfg(
             logger.info("[Runner] Đã trả cfg về nguyên trạng.")
 
 
-def _build_run(
-    method: Method,
-    llm_profile: Optional[str] = None,
-    crush_collective: bool = True,
-) -> Tuple[RetrieverType, List[str], torch.Tensor]:
-    """Dựng ba thứ mọi lần chạy đều cần: retriever + corpus + embeddings.
-
-    prepare(): tables.json → corpus → embeddings (có cache). LLM chỉ tạo khi
-    method cần (murre/crush), và tạo TRƯỚC prepare() để endpoint LLM chưa bật thì
-    báo lỗi ngay, không mất thời gian nạp encoder + encode corpus trước.
-    """
-    llm: Optional[LLMGenerator] = (
-        LLMGenerator(profile=llm_profile) if method.needs_llm else None
-    )
-    encoder, corpus, embs = prepare()
-    retriever: RetrieverType = build_retriever(
-        encoder=encoder, llm=llm, method=method, crush_collective=crush_collective,
-    )
-    return retriever, corpus, embs
-
-
 # ---------------------------------------------------------------------------
 # Option 1 — one_question
 # ---------------------------------------------------------------------------
@@ -114,11 +91,11 @@ def run_one_question(
     """
     q: str = resolve_question(question=question)
 
-    retriever, corpus, embs = _build_run(
+    loaded: LoadedDataset = build_dataset(
         method=method, llm_profile=llm_profile, crush_collective=crush_collective,
     )
-    results: List[RetrievedTable] = retriever.run(
-        question=q, corpus=corpus, schema_embeddings=embs, verbose=verbose,
+    results: List[RetrievedTable] = loaded.retriever.run(
+        question=q, corpus=loaded.corpus, schema_embeddings=loaded.embs, verbose=verbose,
     )
 
     print_results(method=str(method), question=q, results=results, top_n=top_n)
@@ -152,10 +129,71 @@ def run_pipeline(
         _RUN_LOCK.release()
 
 
+def _run_fingerprint(method: Method) -> Dict[str, Any]:
+    """Các tham số mà đổi đi thì kết quả đã lưu trong checkpoint không dùng lại được.
+
+    Đường dẫn checkpoint đã có dataset/model/method/max_hop, nhưng beam_size, pool
+    hay ablation thì không nằm trong tên file — đổi chúng mà vẫn nối tiếp checkpoint
+    cũ là trộn hai cấu hình vào một bảng điểm.
+    """
+    ab = cfg.pipeline.ablation
+    return {
+        "dataset": cfg.general.dataset,
+        "method": method.value,
+        "encoder": cfg.encoder.model_name,
+        "llm_profile": cfg.llm.active_profile,
+        "beam_size": cfg.pipeline.beam_size,
+        "max_hop": cfg.pipeline.max_hop,
+        "top_k_pool": cfg.pipeline.top_k_pool,
+        "ablation": [ab.removal, ab.tabulation, ab.early_stop],
+    }
+
+
+def _load_checkpoint(path: str, fingerprint: Dict[str, Any]) -> Dict[int, ResultRecord]:
+    """Đọc các câu đã chạy xong. Cấu hình khác với lần trước → bỏ, không nối tiếp."""
+    if not os.path.exists(path):
+        return {}
+
+    done: Dict[int, ResultRecord] = {}
+    is_stale: bool = False
+
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj: Dict[str, Any] = json.loads(line)
+            except json.JSONDecodeError:
+                # Dòng cuối viết dở do bị ngắt giữa chừng — bỏ, chạy lại câu đó.
+                logger.warning("[Runner] Checkpoint có dòng hỏng, bỏ qua dòng đó.")
+                continue
+            if "_meta" in obj:
+                if obj["_meta"] != fingerprint:
+                    is_stale = True
+                    break
+                continue
+            done[int(obj["index"])] = ResultRecord.from_dict(d=obj["record"])
+
+    # Đổi tên SAU KHI đã đóng file: Windows không cho rename file đang mở.
+    if is_stale:
+        stale: str = path + ".stale"
+        os.replace(path, stale)
+        logger.warning(
+            f"[Runner] Checkpoint thuộc cấu hình KHÁC → đổi tên thành {stale} "
+            f"và chạy lại từ đầu."
+        )
+        return {}
+
+    if done:
+        logger.info(f"[Runner] Checkpoint: đã có {len(done)} câu, sẽ bỏ qua.")
+    return done
+
+
 def _run_locked(
     method: Method,
     limit: Optional[int],
-    on_progress: Optional[ProgressFn],
+    on_progress: Optional[ProgressFn]
 ) -> Dict[str, Any]:
     """Thân của run_pipeline — đã giữ lock và đã ghi đè cfg."""
     dev: List[Dict[str, Any]] = load_dev()
@@ -165,28 +203,80 @@ def _run_locked(
     if total == 0:
         raise ValueError("dev.json rỗng — không có câu hỏi nào để chạy.")
 
-    retriever, corpus, embs = _build_run(method=method)
+    # Checkpoint đọc TRƯỚC khi dựng dataset: chạy lại một lượt đã xong thì không phải
+    # nạp encoder/LLM làm gì.
+    ckpt_file: str = cfg.outputs.checkpoint()
+    fingerprint: Dict[str, Any] = _run_fingerprint(method=method)
+    done: Dict[int, ResultRecord] = _load_checkpoint(path=ckpt_file, fingerprint=fingerprint)
+    todo: List[int] = [i for i in range(total) if i not in done]
 
-    logger.info(f"[Runner] Bắt đầu {method} trên {total} câu, corpus {len(corpus)} schemas.")
+    loaded: LoadedDataset = build_dataset(method=method)
 
-    output: List[ResultRecord] = []
-    for i, d in enumerate(dev, start=1):
-        hits: List[RetrievedTable] = retriever.run(
-            question=d["utterance"], corpus=corpus, schema_embeddings=embs,
-        )
-        output.append(ResultRecord(
-            utterance=d["utterance"],
-            gold=d.get("rel_schema", []),
-            # to_rows(): đánh số rank + đổi khóa `score` → `similarity` của file format.
-            retrieved=RetrievedTable.to_rows(tables=hits),
-        ))
-        if on_progress is not None:
-            on_progress(i, total)
-        if i % 20 == 0 or i == total:
-            logger.info(f"[Runner] {i}/{total} câu xong.")
+    logger.info(
+        f"[Runner] Bắt đầu {method} trên {total} câu ({len(todo)} câu còn phải chạy), "
+        f"corpus {len(loaded.corpus)} schemas."
+    )
+
+    os.makedirs(os.path.dirname(ckpt_file) or ".", exist_ok=True)
+    is_new: bool = not os.path.exists(ckpt_file)
+    retries: int = max(1, cfg.pipeline.question_retries)
+
+    with open(ckpt_file, "a", encoding="utf-8") as ckpt:
+        if is_new:
+            ckpt.write(json.dumps({"_meta": fingerprint}, ensure_ascii=False) + "\n")
+            ckpt.flush()
+
+        for n, idx in enumerate(todo, start=1):
+            d: Dict[str, Any] = dev[idx]
+
+            # Một lượt đầy đủ là hàng nghìn lần gọi LLM; timeout/429/Ollama bận là
+            # chuyện thường. Thử lại từng câu thay vì để hỏng cả lượt chạy.
+            hits: Optional[List[RetrievedTable]] = None
+            for attempt in range(1, retries + 1):
+                try:
+                    hits = loaded.retriever.run(
+                        question=d["utterance"],
+                        corpus=loaded.corpus,
+                        schema_embeddings=loaded.embs,
+                    )
+                    break
+                except Exception as exc:
+                    if attempt == retries:
+                        logger.error(
+                            f"[Runner] Câu #{idx} hỏng sau {retries} lần thử. "
+                            f"{len(done)} câu đã xong vẫn nằm trong {ckpt_file} — "
+                            f"chạy lại để tiếp tục."
+                        )
+                        raise
+                    wait: float = 2.0 * attempt
+                    logger.warning(
+                        f"[Runner] Câu #{idx} lỗi lần {attempt}/{retries}: "
+                        f"{type(exc).__name__}: {exc}. Chờ {wait:.0f}s rồi thử lại."
+                    )
+                    time.sleep(wait)
+
+            assert hits is not None
+            record = ResultRecord(
+                utterance=d["utterance"],
+                gold=d.get("rel_schema", []),
+                # to_rows(): đánh số rank + đổi khóa `score` → `similarity` của file format.
+                retrieved=RetrievedTable.to_rows(tables=hits),
+            )
+            done[idx] = record
+            ckpt.write(json.dumps(
+                {"index": idx, "record": record.to_dict()}, ensure_ascii=False,
+            ) + "\n")
+            ckpt.flush()  # flush từng câu: tắt máy giữa chừng vẫn giữ được
+
+            if on_progress is not None:
+                on_progress(len(done), total)
+            if n % 20 == 0 or n == len(todo):
+                logger.info(f"[Runner] {len(done)}/{total} câu xong.")
+
+    output: List[ResultRecord] = [done[i] for i in range(total)]
 
     top_k_list: List[int] = list(cfg.general.top_k)
-    metrics: Dict[str, Dict[int, float]] = compute_res(top_k=top_k_list, data=output)
+    metrics: MetricScores = compute_res(top_k=top_k_list, data=output)
 
     result_file: str = cfg.outputs.result()
     score_file: str = cfg.outputs.score()
@@ -194,7 +284,7 @@ def _run_locked(
     with open(result_file, "w", encoding="utf-8") as f:
         json.dump([r.to_dict() for r in output], f, ensure_ascii=False, indent=2)
     with open(score_file, "w", encoding="utf-8") as f:
-        json.dump(metrics, f, ensure_ascii=False, indent=2)
+        json.dump(metrics.to_dict(), f, ensure_ascii=False, indent=2)
 
     depth: int = min(len(d.retrieved) for d in output)
     logger.info(
@@ -227,7 +317,7 @@ def run_batch(
             logger.info(f"[Runner] force_embed → đã xoá {cache_file}, sẽ encode lại.")
 
     logger.info(f"[Runner] Batch {method} — chạy qua run_pipeline()")
-    # _run_locked() đã log số câu + hai đường dẫn file khi xong.
+
     run_pipeline(method=method, limit=limit)
 
     # Bước cuối của paper: top-K bảng → SQL, đọc lại chính file result vừa ghi.

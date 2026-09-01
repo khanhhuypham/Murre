@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 # Mọi đường dẫn trong config đều tương đối so với gốc project, nên chdir về gốc
 # ngay khi import → chạy từ đâu cũng đúng (PyCharm, terminal trong src/steps/...).
@@ -66,10 +66,7 @@ class GeneralConfig(BaseModel):
 class EncoderConfig(BaseModel):
     # Tắt namespace `model_` của pydantic để dùng được tên field `model_name`.
     model_config = ConfigDict(protected_namespaces=())
-
-    # Model THỰC SỰ nạp lên — cũng là thứ DUY NHẤT cần đổi khi muốn thử model khác:
-    # nhãn thư mục outputs/ suy ra từ đây (xem `slug`) nên không thể quên đồng bộ.
-    model_name: str = "Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit"
+    model_name: str
     batch_size: int = 256
 
     @property
@@ -102,15 +99,22 @@ class AblationConfig(BaseModel):
     """Ba cờ ablation của paper (Table 4, §4.3) — false để tắt từng thành phần."""
     removal: bool = True     # false = nối câu hỏi + bảng đã tìm, thay vì Removal
     tabulation: bool = True  # false = Removal trả câu tự nhiên, không ép sang dạng schema
-    early_stop: bool = True  # false = luôn chạy đủ max_hop
+    early_stop: bool = False  # false = luôn chạy đủ max_hop
 
 
 class PipelineConfig(BaseModel):
     method: str = "murre"  # murre | single_hop | crush
-    beam_size: int = 5     # paper dùng 5. Tăng → tốt hơn nhưng tốn API call hơn
+    beam_size: int = 5     # B của paper (§4.1). Mỗi beam nở 3B nhánh (rewrite/sample.py).
+    # H của paper (§4.1), ĐẾM CẢ turn 0: max_hop=3 → turn0, turn1, turn2, tức chỉ 2
+    # lượt Removal. max_hop=1 nghĩa là single-hop. Xem Table 5 và slurm/run.sh.
     max_hop: int = 3
-    top_k_pool: int = 100  # hop 1+ chỉ search trong top_k_pool kết quả của hop 0
+    # max(--top_k) trong run.sh của tác giả. Vừa là độ sâu danh sách trả về, vừa là
+    # POOL: mọi turn sau turn 0 chỉ tìm trong đúng ngần này bảng của turn 0.
+    top_k_pool: int = 100
     top_n_output: int = 5  # số bảng truyền vào bước sinh SQL
+    # Số lần thử lại MỘT CÂU HỎI khi retriever ném lỗi (LLM timeout, 429, Ollama bận).
+    # Một lượt chạy đầy đủ là hàng nghìn lần gọi LLM, gặp lỗi tạm thời là chắc chắn.
+    question_retries: int = 3
     ablation: AblationConfig = Field(default_factory=AblationConfig)
 
 
@@ -157,6 +161,8 @@ class PathsConfig(BaseModel):
     result: str = "outputs/{dataset}/{model}/{method}/result/turn{max_hop}/dev.json"
     score: str = "outputs/{dataset}/{model}/{method}/result/turn{max_hop}/score.json"
     sql: str = "outputs/{dataset}/{model}/{method}/result/turn{max_hop}/sql.{k}.txt"
+    # Ghi dần từng câu để chạy lại là tiếp tục được, không mất công đã chạy.
+    checkpoint: str = "outputs/{dataset}/{model}/{method}/result/turn{max_hop}/checkpoint.jsonl"
 
 
 class OutputPaths:
@@ -223,6 +229,9 @@ class OutputPaths:
     def sql(self, k: int) -> str:
         return self._render(self._settings.paths.sql, k=k)
 
+    def checkpoint(self) -> str:
+        return self._render(self._settings.paths.checkpoint)
+
 
 class LoggingConfig(BaseModel):
     level: str = "DEBUG"  # DEBUG | INFO | WARNING | ERROR
@@ -249,10 +258,15 @@ class RunOptionConfig(BaseModel):
 
 
 class Settings(BaseModel):
-    """Root config — mọi section có mặc định sẵn, trừ `llm` (bắt buộc khai trong YAML)."""
+    """Root config — mọi section có mặc định sẵn, TRỪ `encoder` và `llm`.
+
+    Hai section đó bắt buộc khai trong config.yaml vì chúng quyết định model nào
+    được nạp/tải về. Có mặc định ở đây thì khai thiếu vẫn chạy được, chỉ là chạy
+    bằng model khác thứ mình tưởng — im lặng và tốn vài GB băng thông.
+    """
 
     general: GeneralConfig = Field(default_factory=GeneralConfig)
-    encoder: EncoderConfig = Field(default_factory=EncoderConfig)
+    encoder: EncoderConfig
     llm: LLMConfig
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
@@ -270,6 +284,26 @@ class Settings(BaseModel):
         (`cfg.paths.*` là template; `cfg.outputs.*()` là đường dẫn thật.)"""
         return OutputPaths(self)
 
+    def paths_for(self, dataset: Optional[str] = None) -> DatasetPathsConfig:
+        """Nhóm đường dẫn đầu vào của `dataset`. None → `general.dataset` đang chọn.
+
+        Nhận dataset tường minh để chỗ gọi (API phục vụ nhiều dataset cùng lúc)
+        không phải ghi đè general.dataset — biến toàn cục, đổi là mọi request thấy.
+        """
+        name: str = dataset or self.general.dataset
+        group: Any = getattr(self.paths, name, None)
+        if not isinstance(group, DatasetPathsConfig):
+            available: List[str] = [
+                field
+                for field in type(self.paths).model_fields
+                if isinstance(getattr(self.paths, field), DatasetPathsConfig)
+            ]
+            raise ValueError(
+                f"dataset='{name}' chưa khai báo đường dẫn trong paths.\n"
+                f"  Dataset có sẵn: {available}"
+            )
+        return group
+
     @property
     def dataset_paths(self) -> DatasetPathsConfig:
         """Nhóm đường dẫn đầu vào của `general.dataset` đang chọn.
@@ -277,18 +311,7 @@ class Settings(BaseModel):
             cfg.dataset_paths.tables   → "dataset/spider/tables.json"
             cfg.dataset_paths.prompt   → "prompts/spider_rewrite.txt"
         """
-        group: Any = getattr(self.paths, self.general.dataset, None)
-        if not isinstance(group, DatasetPathsConfig):
-            available: List[str] = [
-                name
-                for name in type(self.paths).model_fields
-                if isinstance(getattr(self.paths, name), DatasetPathsConfig)
-            ]
-            raise ValueError(
-                f"general.dataset='{self.general.dataset}' chưa khai báo đường dẫn "
-                f"trong paths.\n  Dataset có sẵn: {available}"
-            )
-        return group
+        return self.paths_for()
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +361,21 @@ def load_settings(config_path: Optional[Path] = None) -> Settings:
     with path.open("r", encoding="utf-8") as f:
         raw: Dict[str, Any] = yaml.safe_load(f)
 
-    settings: Settings = Settings(**raw)
+    try:
+        settings: Settings = Settings(**raw)
+    except ValidationError as exc:
+        # Lỗi thô của pydantic in ra một khối dài không nói rõ phải sửa file nào.
+        problems: str = "\n".join(
+            f"  - {'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
+            for e in exc.errors()
+        )
+        raise ValueError(
+            f"config.yaml không hợp lệ ({path.resolve()}):\n{problems}\n\n"
+            f"Khối `encoder:` và `llm:` bắt buộc phải có. Ví dụ tối thiểu:\n"
+            f"  encoder:\n"
+            f"      model_name: Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit\n"
+        ) from None
+
     _apply_env_overrides(settings=settings)
     return settings
 

@@ -55,7 +55,7 @@ MURRE/                               ← Thư mục gốc (Working Directory khi
 │   │   ├── murre.py                 ← MurreRetriever — method chính (beam search, §3.2/§3.5)
 │   │   ├── single_hop.py            ← Baseline Single-hop (§4.2)
 │   │   ├── crush.py                 ← Baseline CRUSH (§4.2, prompt tự suy luận — xem mục 12)
-│   │   ├── factory.py               ← build_retriever(): chọn đúng method theo config
+│   │   ├── build.py                 ← build_retriever() / build_dataset(): ráp bộ retrieval
 │   │   └── runner.py                ← NƠI DUY NHẤT viết cách chạy: run_one_question /
 │   │                                  run_pipeline / run_batch
 │   ├── steps/                       ← Hai bước phụ trợ chạy riêng được
@@ -316,7 +316,7 @@ python -m main
 ```
 
 Cả 3 method đi CHUNG một đường: `run_batch()` → `run_pipeline()` → retriever tương
-ứng trong `methods/` (dựng qua `methods/factory.py`). Mỗi method có đúng MỘT bản cài
+ứng trong `methods/` (ráp qua `methods/build.py`). Mỗi method có đúng MỘT bản cài
 đặt, nên số của `python -m main`, `/retrieve` và `/pipeline/run` luôn khớp nhau.
 
 | `pipeline.method` | Lớp chạy | Các bước |

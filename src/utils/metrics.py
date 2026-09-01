@@ -9,6 +9,7 @@
 
 from typing import Dict, List
 
+from models.metrics import MetricScores
 from models.records import ResultRecord
 
 
@@ -25,8 +26,9 @@ def compute_recall(pred_list: List[str], gold_list: List[str]) -> float:
     """
     if not gold_list:
         return 0.0
-    correct = sum(1 for p in pred_list if p in gold_list)
-    return correct / len(gold_list)
+    # Đếm theo TẬP HỢP: nếu pred_list lỡ có bảng trùng lặp thì đếm tuyến tính sẽ
+    # cho recall > 1.
+    return len(set(pred_list) & set(gold_list)) / len(gold_list)
 
 
 def compute_recall_at_k(
@@ -39,12 +41,12 @@ def compute_recall_at_k(
 
     Trả về:
         {K: recall_value} cho mỗi K trong top_k
+
+    KHÔNG bỏ qua các K lớn hơn len(pred_list): `pred_list[:k]` tự cắt đúng khi danh
+    sách ngắn hơn K, còn bỏ đi thì compute_res() cộng 0.0 cho câu đó và recall@K bị
+    tính thấp hơn thực tế.
     """
-    return {
-        k: compute_recall(pred_list[:k], gold_list)
-        for k in top_k
-        if k <= len(pred_list)
-    }
+    return {k: compute_recall(pred_list[:k], gold_list) for k in top_k}
 
 
 def compute_complete_recall_at_k(
@@ -70,7 +72,7 @@ def compute_complete_recall_at_k(
 def compute_res(
     top_k: List[int],
     data: List[ResultRecord],
-) -> Dict[str, Dict[int, float]]:
+) -> MetricScores:
     """
     Tính trung bình recall@K và complete recall=K trên toàn bộ dataset.
 
@@ -80,10 +82,7 @@ def compute_res(
                 Đọc từ file thì dùng ResultRecord.from_list(json.load(f)).
 
     Trả về:
-        {
-          "recall":          {K: avg_recall@K},
-          "complete_recall": {K: avg_complete_recall=K}
-        }
+        MetricScores(recall={K: ...}, complete_recall={K: ...}) — xem models/metrics.py.
     """
     recall_sum:   Dict[int, float] = {k: 0.0 for k in top_k}
     complete_sum: Dict[int, float] = {k: 0.0 for k in top_k}
@@ -100,7 +99,7 @@ def compute_res(
             complete_sum[k] += com.get(k, 0.0)
 
     n: int = len(data)
-    return {
-        "recall":          {k: v / n for k, v in recall_sum.items()},
-        "complete_recall": {k: v / n for k, v in complete_sum.items()},
-    }
+    return MetricScores(
+        recall={k: v / n for k, v in recall_sum.items()},
+        complete_recall={k: v / n for k, v in complete_sum.items()},
+    )

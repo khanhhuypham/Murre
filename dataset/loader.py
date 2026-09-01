@@ -23,9 +23,9 @@ def _load_lines(path: str) -> List[str]:
 # Hàm tải theo dataset hiện tại trong config
 # -----------------------------------------------------------------------------
 
-def load_tables() -> List[Dict[str, Any]]:
-    """Tải tables.json của dataset đang chọn trong config.general.dataset."""
-    path: str = cfg.dataset_paths.tables
+def load_tables(dataset: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Tải tables.json. dataset=None → dùng dataset đang chọn (general.dataset)."""
+    path: str = cfg.paths_for(dataset).tables
     data: List[Dict[str, Any]] = _load_json(path=path)
     logger.info(f"[Loader] Đã tải {len(data)} databases từ: {path}")
     return data
@@ -85,17 +85,6 @@ def load_gold() -> List[str]:
     logger.info(f"[Loader] Đã tải {len(data)} câu SQL vàng từ: {path}")
     return data
 
-
-# -----------------------------------------------------------------------------
-# Hàm tải cụ thể (khi cần chỉ định rõ dataset)
-# -----------------------------------------------------------------------------
-
-def load_spider_tables() -> List[Dict[str, Any]]:
-    return _load_json(path="dataset/spider/tables.json")
-
-
-def load_bird_tables() -> List[Dict[str, Any]]:
-    return _load_json(path="dataset/bird/tables.json")
 
 
 

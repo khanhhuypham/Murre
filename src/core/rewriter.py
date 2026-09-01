@@ -35,8 +35,30 @@ _EARLY_STOP_INDICATORS: List[str] = [
     "No completion needed",
     "None",
 ]
+
+# Model hay chép lại nhãn cuối prompt trước khi trả lời ("Completing Tables: ...").
+# Cắt đi để phần còn lại là đúng nội dung Removal, không lẫn nhãn vào query retrieve.
+_ECHO_PREFIXES: List[str] = ["Completing Tables:", "Rewritten Question:"]
+
+
+def _strip_echo(text: str) -> str:
+    """Bỏ nhãn prompt mà model chép lại, giữ nguyên phần còn lại (kể cả đa dòng)."""
+    out: str = text.strip()
+    for prefix in _ECHO_PREFIXES:
+        if out.startswith(prefix):
+            out = out[len(prefix):].lstrip()
+    return out
+
+
 def _judge_early_stop(text: str) -> bool:
-    return any(indicator in text for indicator in _EARLY_STOP_INDICATORS)
+    """Chỉ xét DÒNG ĐẦU của output, và phải khớp từ đầu dòng.
+
+    §3.4 của paper: LLM sinh một "special mark" (ví dụ "None") để báo đã đủ bảng.
+    Quét cả output bằng `in` thì một danh sách bảng hợp lệ có chữ "None" nằm đâu đó
+    ở giữa cũng bị hiểu là dừng sớm — model nhỏ dính lỗi này liên tục.
+    """
+    first: str = next((ln.strip() for ln in _strip_echo(text).splitlines() if ln.strip()), "")
+    return any(first.startswith(indicator) for indicator in _EARLY_STOP_INDICATORS)
 
 
 class QueryRewriter:
@@ -60,7 +82,6 @@ class QueryRewriter:
         ds_paths = cfg.dataset_paths
         prompt_path: str = ds_paths.prompt if self.use_tabulation else ds_paths.prompt_no_tabulation
         with open(prompt_path, "r", encoding="utf-8") as f:
-            # Giữ nguyên format của tác giả: join các dòng lại
             self.prompt_template:str = "\n".join(line.rstrip("\n") for line in f)
 
         mode_desc: str = "Tabulation" if self.use_tabulation else "w/o Tabulation (natural language)"
@@ -69,12 +90,18 @@ class QueryRewriter:
     @staticmethod
     def _build_database_field(schemas: List[str]) -> str:
         """
-        Ghép các schema đã retrieve thành chuỗi database field.
-        Format của tác giả: "db.table1(col...) \\n db.table2(col...)"
+        Ghép các schema đã retrieve thành trường `Database:` của prompt.
+
+        Dấu ngăn là chuỗi " \\n " — dấu gạch chéo + chữ n VIẾT RA, không phải ký tự
+        xuống dòng. Cả prompt gốc lẫn rewrite/rewrite.py của tác giả đều vậy:
+
+            Database: car_1.model list(model id, maker, model) \\n car_1.cars data(...)
+
+        Table 6 của paper trình bày chỗ này thành nhiều dòng chỉ vì khổ giấy — đừng
+        sửa theo, cả khối `Database:` nằm trên MỘT dòng.
         """
         if len(schemas) == 1:
             return schemas[0]
-        # Dùng " \\n " làm dấu phân cách giữa nhiều bảng (theo format tác giả)
         return " \\n ".join(schemas)
 
     def rewrite(self, question: str, retrieved_schemas: List[str]) -> str:
@@ -93,7 +120,12 @@ class QueryRewriter:
         # Điền câu hỏi và database vào template few-shot
         prompt: str = self.prompt_template.format(question=question, database=database_field)
 
-        return self.llm.generate(prompt)
+        # Prompt kết thúc bằng nhãn "Completing Tables:" — model chỉ được điền nốt MỘT
+        # khối rồi ngừng. Các ví dụ few-shot cách nhau bằng một dòng trống nên "\n\n"
+        # là ranh giới; đúng bằng config/35turbo.json của tác giả.
+        return _strip_echo(
+            self.llm.generate(prompt, stop=["\n\n"], max_tokens=256)
+        )
 
     @staticmethod
     def is_early_stop(rewrite_output: str) -> bool:

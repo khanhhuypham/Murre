@@ -29,7 +29,7 @@ llm:
     #   OpenAI:  gpt-3.5-turbo, gpt-4o-mini, gpt-4o
     #   Groq:    llama-3.1-8b-instant
     #   Ollama:  qwen2.5:7b, qwen2.5:14b, qwen2.5-coder:7b, llama3.2, ...
-    active_profile: qwen2.5-0.5b
+    active_profile: qwen2.5-coder-7b
     # Khai báo sẵn nhiều "profile" LLM, mỗi profile là 1 model/endpoint riêng.
     # Thêm profile mới bằng cách copy 1 khối dưới đây và đổi tên/model_name.
 
