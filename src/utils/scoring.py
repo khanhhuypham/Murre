@@ -1,76 +1,69 @@
 # =============================================================================
 # utils/scoring.py — Toàn bộ công thức tính điểm của MURRE, khai báo ĐÚNG MỘT LẦN
 #
-# Ba hàm, dùng ở hai chỗ khác nhau trong methods/murre.py:
+# Bám ĐÚNG paper (COLING 2025), không bám code phát hành của tác giả:
 #
-#   pruning_score()  tỉa beam sau mỗi hop        (rewrite/sample.py của tác giả)
-#   table_score()    xếp hạng bảng ở cuối        (rewrite/score.py của tác giả)
-#   normalize()      hàm pos(), dùng bởi 2 cái trên
+#   normalize()    Eq. C.1 (Appendix C)      Norm(s) = (s + 1) / 2
+#   path_score()   Eq. D.2 (Appendix D)      Score_Path = Π Norm(sim) trên đường đi
+#   score_tables() Algorithm 1 (Appendix E)  Score_Table(t) = max Score_Path trên
+#                                            mọi đường đi có chứa t
 #
-# LƯU Ý QUAN TRỌNG: pruning_score và table_score KHÔNG cùng công thức. Tỉa beam
-# dùng similarity thô, xếp hạng bảng thì cho qua pos() trước. Bản cài đặt gốc đúng
-# như vậy — không phải chép nhầm.
+# Chỉ MỘT công thức điểm đường đi cho cả hai chỗ dùng:
+#   - tỉa beam sau mỗi hop  (§3.3: "choose B results ... method detailed in §3.5")
+#   - xếp hạng bảng ở cuối  (§3.5)
+# Paper không phân biệt hai chỗ này, nên ở đây cũng không.
+#
+# HỆ QUẢ CỦA VIỆC BÁM PAPER: Norm(s) ∈ [0, 1] nên Score_Path là TÍCH các số ≤ 1 →
+# đường đi càng dài điểm càng THẤP. Đó đúng là ý paper (Score_Path là xác suất,
+# Eq. D.2). Bảng tìm được ở hop 1 vì thế thường có điểm cao hơn bảng tìm ở hop 3 —
+# trừ khi similarity của nó thấp hơn hẳn.
 # =============================================================================
 from __future__ import annotations
 
-import math
-from typing import Iterable, Sequence
+from typing import Dict, Iterable, Sequence, Tuple
 
-# Chặn dưới trước khi lấy log: cosine âm làm math.log ném ValueError. Bản gốc không
-# chặn nên sẽ vỡ; ở đây chỉ đỡ cho khỏi vỡ, không đổi thứ hạng thực tế.
-_LOG_FLOOR: float = 1e-9
+# Một đường đi rút gọn còn đúng hai thứ mà công thức cần: bảng nào và sim bao nhiêu.
+PathScores = Tuple[Sequence[str], Sequence[float]]
 
 
 def normalize(s: float) -> float:
-    """pos(s) = (s + 2) / 2 — đúng hàm `pos()` trong rewrite/score.py của tác giả.
+    """Norm(s) = (s + 1) / 2 — Equation C.1, Appendix C.
 
-    Đây là chỗ paper và code KHÔNG khớp, và ta chọn theo CODE:
-
-        Appendix C viết   Norm(s) = (s + 1) / 2  → [-1,1] về [0,1], là xác suất.
-        rewrite/score.py  pos(s)  = (s + 2) / 2  → [-1,1] về [0.5,1.5], KHÔNG phải
-                                                   xác suất.
-
-    Hệ quả lớn: log(pos(s)) DƯƠNG khi s > 0, nên đường đi càng dài điểm càng CAO —
-    ngược hẳn công thức trong paper (tích xác suất thì càng dài càng thấp). Bản code
-    mới là bản sinh ra Bảng 2, nên bám theo nó.
+    Đưa cosine similarity từ [-1, 1] về [0, 1] để đọc như một xác suất
+    P̂(t_i | q_h,b) trong Equation 3.1. Norm tăng theo s nên similarity càng cao
+    thì xác suất bảng được retrieve càng lớn.
     """
-    return (s + 2) / 2
-
-
-def _log_pos(s: float) -> float:
-    """log(pos(s)), đã chặn dưới."""
-    return math.log(max(normalize(s=s), _LOG_FLOOR))
-
-
-def pruning_score(similarities: Iterable[float]) -> float:
-    """Điểm để TỈA BEAM sau mỗi hop = Σ log(sim thô) — rewrite/sample.py.
-
-    Không gọi pos(). Chỉ dùng để so các nhánh với nhau trong cùng một hop, mà các
-    nhánh trong cùng hop luôn dài bằng nhau, nên hằng số cộng thêm không đổi thứ tự.
-    """
-    return sum(math.log(max(s, _LOG_FLOOR)) for s in similarities)
+    return (s + 1.0) / 2.0
 
 
 def path_score(similarities: Iterable[float]) -> float:
-    """Phần đóng góp của một đường đi vào điểm bảng = Σ log(pos(sim)).
+    """Score_Path(Path_h,b) = Π_j Norm(sim_j) — Equation D.2, Appendix D.
 
-    Tách riêng vì table_score() gọi nó cho mọi ứng viên trên cùng một đường đi —
-    tính một lần rồi dùng lại.
+    Xác suất của cả đường đi = tích xác suất từng bước. Đường đi rỗng → 1.0
+    (tích rỗng), đúng nghĩa "chưa đi bước nào thì chưa mất mát gì".
     """
-    return sum(_log_pos(s=s) for s in similarities)
+    score: float = 1.0
+    for s in similarities:
+        score *= normalize(s=s)
+    return score
 
 
-def table_score(candidate_similarity: float, path_similarities: Sequence[float]) -> float:
-    """Điểm của một bảng ứng viên khi nối nó vào cuối một đường đi — rewrite/score.py.
+def score_tables(paths: Iterable[PathScores]) -> Dict[str, float]:
+    """Algorithm 1 (Appendix E) — chấm điểm mọi bảng nằm trên các đường đi.
 
-        có đường đi   → log(pos(sim_ứng_viên)) + Σ log(pos(sim trên đường đi))
-        đường đi rỗng → pos(sim_ứng_viên), KHÔNG lấy log
+        Score_Table(t_i) = max_{path ∈ Path_ti} Score_Path(path)
 
-    Nhánh thứ hai xảy ra khi câu hỏi dừng sớm ngay hop đầu, lúc đó chưa có đường đi
-    nào. score.py xử lý bất nhất như vậy (một bên có log, một bên không) — giữ
-    nguyên để khớp bản gốc. Không gây lệch thứ hạng vì hai nhánh không bao giờ
-    xuất hiện cùng lúc trong một câu hỏi.
+    `paths` là all_paths của Algorithm 1: MỌI đường đi đã sinh ra trong quá trình
+    tìm kiếm (mọi hop, kể cả đường đi bị tỉa và đường đi dừng sớm), mỗi phần tử là
+    cặp (danh sách schema, danh sách similarity) cùng độ dài và cùng thứ tự hop.
+
+    Bảng không nằm trên đường đi nào thì KHÔNG có điểm và không xuất hiện trong kết
+    quả — paper chỉ xếp hạng bảng đã được retrieve.
     """
-    if not path_similarities:
-        return normalize(s=candidate_similarity)
-    return _log_pos(s=candidate_similarity) + path_score(similarities=path_similarities)
+    best: Dict[str, float] = {}
+    for schemas, sims in paths:
+        score: float = path_score(similarities=sims)
+        for schema in schemas:
+            if score > best.get(schema, -1.0):
+                best[schema] = score
+    return best

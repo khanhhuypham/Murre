@@ -145,7 +145,7 @@ def _run_fingerprint(method: Method) -> Dict[str, Any]:
         "beam_size": cfg.pipeline.beam_size,
         "max_hop": cfg.pipeline.max_hop,
         "top_k_pool": cfg.pipeline.top_k_pool,
-        "ablation": [ab.removal, ab.tabulation, ab.early_stop],
+        "ablation": [ab.removal, ab.tabulation],
     }
 
 

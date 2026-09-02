@@ -96,20 +96,25 @@ class LLMConfig(BaseModel):
 
 
 class AblationConfig(BaseModel):
-    """Ba cờ ablation của paper (Table 4, §4.3) — false để tắt từng thành phần."""
+    """Hai cờ ablation của paper (Table 4, §4.3) — false để tắt từng thành phần.
+
+    Early Stop luôn bật: khi Removal trả "None" thì dừng sớm, không có cờ để tắt.
+    """
     removal: bool = True     # false = nối câu hỏi + bảng đã tìm, thay vì Removal
     tabulation: bool = True  # false = Removal trả câu tự nhiên, không ép sang dạng schema
-    early_stop: bool = False  # false = luôn chạy đủ max_hop
 
 
 class PipelineConfig(BaseModel):
     method: str = "murre"  # murre | single_hop | crush
-    beam_size: int = 5     # B của paper (§4.1). Mỗi beam nở 3B nhánh (rewrite/sample.py).
-    # H của paper (§4.1), ĐẾM CẢ turn 0: max_hop=3 → turn0, turn1, turn2, tức chỉ 2
-    # lượt Removal. max_hop=1 nghĩa là single-hop. Xem Table 5 và slurm/run.sh.
+    # B của paper (§4.1). Với MURRE, B vừa là số nhánh giữ lại, vừa là số bảng mỗi
+    # nhánh retrieve ở mỗi hop (§3.3) → mỗi hop sinh tối đa B×B đường đi.
+    beam_size: int = 5
+    # H của paper (§4.1), ĐẾM CẢ hop 1: max_hop=3 → hop 1, 2, 3, tức chỉ 2 lượt
+    # Removal. max_hop=1 nghĩa là single-hop. Xem Table 5 và slurm/run.sh.
     max_hop: int = 3
-    # max(--top_k) trong run.sh của tác giả. Vừa là độ sâu danh sách trả về, vừa là
-    # POOL: mọi turn sau turn 0 chỉ tìm trong đúng ngần này bảng của turn 0.
+    # Độ sâu danh sách trả về của single_hop và crush. MURRE KHÔNG dùng: theo §3.3
+    # nó quét toàn corpus mỗi hop và chỉ xếp hạng bảng nằm trên đường đi (Alg. 1),
+    # nên độ dài kết quả do beam_size × max_hop quyết định.
     top_k_pool: int = 100
     top_n_output: int = 5  # số bảng truyền vào bước sinh SQL
     # Số lần thử lại MỘT CÂU HỎI khi retriever ném lỗi (LLM timeout, 429, Ollama bận).

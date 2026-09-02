@@ -37,10 +37,6 @@ Question: Show the name of the teacher for the math course.
 Database: course_teach.teacher(teacher id, name, age, hometown) \n course_teach.course(course id, staring date, course)
 Completing Tables: course_teach.course arrange(course id, teacher id, grade)
 
-Quetsion: What are the ids of the students who do not own cats as pets?
-Database: pets_1.has pet(student id, pet id) \n pets_1.student(student id, last name, first name, age, sex, major, advisor, city code)
-Completing Tables: pets_1.pets(pet id, pet type, pet age, weight)
-
 Question: {question}
 Database: {database}
 Completing Tables: 

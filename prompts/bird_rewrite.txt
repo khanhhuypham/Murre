@@ -1,7 +1,7 @@
 Given the following SQL tables, your job is to complete the possible left SQL tables given a user’s request.
 Return None if no left SQL tables according to the user’s request.
 
-Quetsion: What was the growth rate of the total amount of loans across all accounts for a male client between 1996 and 1997?
+Question: What was the growth rate of the total amount of loans across all accounts for a male client between 1996 and 1997?
 Database: financial.client(client_id, gender, birth_date, location of branch) \n financial.loan(loan_id, account_id, date, amount, duration, monthly payments, status)
 Completing Tables: financial.account(account id, location of branch, frequency, date) \n financial.disp(disposition id, client_id, account_id, type)
 
@@ -32,10 +32,6 @@ Completing Tables: None
 Question: Please list the leagues from Germany.
 Database: european_football_2.League(id, country id, name)
 Completing Tables: european_football_2.Country(id, name)
-
-Question: Please list the zip code of all the charter schools in Fresno County Office of Education.
-Database: california_schools.schools(CDSCode, National Center for Educational Statistics school district identification number, National Center for Educational Statistics school identification number, StatusType, County, District, School, Street, street address, City, Zip, State, MailStreet, Charter)
-Completing Tables: california_schools.frpm(CDSCode, Academic Year, County Code, District Code, School Code, County Name, District Name, School Name, District Type, School Type, Educational Option Type, Charter School (Y/N), Charter School Number, Charter Funding Type, IRC, Enrollment (K-12))
 
 Question: {question}
 Database: {database}

@@ -103,11 +103,20 @@ def evaluate_run(
     if k > depth:
         # compute_recall_at_k() bỏ qua k > số bảng đã lưu → metric sẽ ra 0.0 mà
         # không báo gì. Chặn ở đây để không trả về số sai.
+        #
+        # Cách nới `depth` KHÁC NHAU theo method: single_hop/crush cắt danh sách ở
+        # pipeline.top_k_pool, còn murre thì theo §3.5 của paper chỉ xếp hạng bảng
+        # nằm trên đường đi (tối đa B + (H-1)·B²) nên top_k_pool không có tác dụng.
+        knob: str = (
+            "pipeline.beam_size (và/hoặc pipeline.max_hop)"
+            if mt is Method.MURRE
+            else "pipeline.top_k_pool"
+        )
         raise HTTPException(
             status_code=400,
             detail=(
                 f"k={k} lớn hơn số bảng đã lưu mỗi câu ({depth}). Tăng "
-                f"pipeline.top_k_pool rồi chạy lại, hoặc dùng k <= {depth}."
+                f"{knob} rồi chạy lại, hoặc dùng k <= {depth}."
             ),
         )
 

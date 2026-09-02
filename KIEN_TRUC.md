@@ -116,18 +116,17 @@ số hiện ra: số lượt gọi LLM, và số lần chuẩn hoá lại toàn 
 ```mermaid
 flowchart LR
     Q["câu hỏi<br/>utterance"] --> E["encode<br/>SGPT bi-encoder"]
-    E --> H0["hop 0 · TOÀN CORPUS<br/>normalize + matmul + topk"]
-    H0 --> P["pool<br/>top 200"]
-    P --> L1
+    E --> H0["hop 1 · TOÀN CORPUS<br/>matmul + topk → B đường đi"]
+    H0 --> L1
 
-    subgraph LOOP["VÒNG LẶP hop 1..max_hop = 3 · beam 5"]
+    subgraph LOOP["VÒNG LẶP hop 2..max_hop = 3 · beam 5"]
         direction LR
-        L1["LLM rewrite<br/>Completing Tables"] --> L2["tìm trong pool<br/>normalize LẠI corpus"]
-        L2 --> L3["tỉa beam<br/>giữ top-5"]
-        L3 -.->|"nếu LLM chưa trả None"| L1
+        L1["LLM Removal<br/>câu hỏi GỐC + bảng trên đường đi"] --> L2["retrieve TOÀN CORPUS<br/>top-B mỗi nhánh → B×B"]
+        L2 --> L3["tỉa beam<br/>giữ top-5 theo Score_Path"]
+        L3 -.->|"nhánh nào LLM chưa trả None"| L1
     end
 
-    L3 --> RANK["xếp hạng<br/>Score_Path → Score_Table"]
+    L3 --> RANK["xếp hạng mọi đường đi<br/>Score_Path → Score_Table"]
     RANK --> SQL["sinh SQL<br/>top-K → LLM"]
 ```
 
@@ -205,7 +204,7 @@ thứ ba không thuộc về một retriever.
 ### 07 — Không có manifest, hai lần chạy khác cấu hình ghi đè lẫn nhau · `CAO`
 
 Đường dẫn output chỉ được khoá theo `{dataset}/{model}/{method}/turn{max_hop}`. Còn
-`beam_size`, `top_k_pool`, ba cờ ablation (`removal`, `tabulation`, `early_stop`) và
+`beam_size`, `top_k_pool`, hai cờ ablation (`removal`, `tabulation`) và
 LLM profile thì **không** nằm trong khoá. Chạy beam 5 rồi chạy beam 10 là mất kết quả
 cũ, im lặng.
 
@@ -338,7 +337,7 @@ như không sửa logic.
 src/
 ├── domain/                  # thuần Python — không torch, không fastapi, không cfg
 │   ├── entities.py          # Schema, RetrievedTable, BeamPath, ResultRecord
-│   ├── scoring.py           # normalize(), path_score(), score_table()  ← utils/scoring.py
+│   ├── scoring.py           # normalize(), path_score(), score_tables()  ← utils/scoring.py
 │   ├── metrics.py           # recall@k, complete_recall@k               ← utils/metrics.py
 │   └── errors.py            # DomainError — KHÔNG có HTTPException      ← models/errors.py
 ├── ports/                   # [MỚI] typing.Protocol — hợp đồng, không cài đặt

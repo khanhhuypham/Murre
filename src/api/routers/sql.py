@@ -46,7 +46,7 @@ async def generate_sql(payload: SqlRequest, request: Request) -> SqlResponse:
 
     # Cả retrieve lẫn gọi LLM đều blocking → đẩy sang thread để không chẹn event loop.
     tables: List[RetrievedTable] = await asyncio.to_thread(
-        ds.retriever.run, payload.question, ds.corpus, ds.embs,
+        ds.retriever.run, payload.question, ds.corpus, ds.embs,verbose=True
     )
     if not tables:
         raise HTTPException(status_code=422, detail="Không tìm được bảng nào cho câu hỏi này.")

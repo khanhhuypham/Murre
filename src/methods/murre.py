@@ -1,48 +1,59 @@
 """MURRE: retrieve bảng đa hop bằng beam search → xếp hạng bảng → sinh SQL.
 
-VÒNG ĐỜI MỘT CÂU HỎI
---------------------
-    turn 0      _retrieve() trên toàn corpus bằng câu hỏi gốc, lấy 100 bảng.
-                100 bảng này thành POOL — mọi turn sau chỉ tìm trong đây.
+Bản cài đặt này BÁM THEO PAPER (COLING 2025, §3.2–3.5 + Appendix C/D/E), không
+bám theo code phát hành ở github.com/zhxlia/Murre. Xem mục cuối docstring để biết
+5 chỗ hai bản khác nhau.
 
-    turn 1..H-1 lặp 3 bước:
-                  a. _grow()    mỗi nhánh nở ≤3B ứng viên, gộp lại, giữ top-B
-                  b. _removal() LLM xoá thông tin đã có khỏi câu hỏi
-                                → nếu LLM báo "đủ rồi" thì dừng cả câu hỏi
-                  c. _retrieve() lại trong pool bằng câu vừa viết lại
+VÒNG ĐỜI MỘT CÂU HỎI (§3.2 — Figure 2)
+--------------------------------------
+    hop 1       Retrieval: encode CÂU HỎI GỐC, quét TOÀN BỘ corpus, lấy top-B bảng
+                → B đường đi, mỗi đường đi dài 1.
 
-    cuối        _rank() chấm điểm mọi ứng viên của turn cuối → danh sách xếp hạng
+    hop 2..H    lặp hai pha của paper:
+                  Removal   (§3.4) mỗi đường đi → LLM xoá thông tin các bảng đã có
+                                   khỏi CÂU HỎI GỐC, trả về phần còn thiếu dưới
+                                   dạng bảng. Trả "None" → đường đi đó dừng sớm,
+                                   đóng băng lại nhưng VẪN được đem đi chấm điểm.
+                  Retrieval (§3.3) mỗi câu hỏi Removal quét TOÀN BỘ corpus, lấy
+                                   top-B bảng → tối đa B×B đường đi mới; tỉa còn
+                                   B đường đi tốt nhất cho hop kế.
+
+    cuối        Score (§3.5, Algorithm 1): gom MỌI đường đi đã sinh ra ở mọi hop,
+                Score_Path = tích Norm(similarity), Score_Table = max Score_Path
+                trên các đường đi chứa bảng đó → xếp hạng giảm dần.
 
 TỪ VỰNG
 -------
     Hit           một bảng retrieve được (schema + similarity + vị trí corpus)
-    RetrievalPath một đường đi: dãy bảng đã qua + similarity từng bước (Eq D.1)
-    Beam          một nhánh đang sống: đường đi + toàn bộ ứng viên nó retrieve được
-    turn          danh sách Beam ở một hop. Turn 0 có 1 phần tử (đường đi rỗng),
-                  các turn sau có B phần tử.
+    RetrievalPath Path_h,b của paper (Eq. D.1): dãy bảng đã qua + similarity từng
+                  bước, kèm câu truy vấn đã dùng ở bước cuối
+    frontier      B đường đi sống sót sau khi tỉa, sẽ được nở tiếp ở hop sau
+    all_paths     all_paths của Algorithm 1 — MỌI đường đi từng sinh ra, kể cả
+                  đường bị tỉa và đường dừng sớm. Đây là đầu vào duy nhất của Score.
 
-BÁM CODE TÁC GIẢ, KHÔNG BÁM CHỮ TRONG PAPER
--------------------------------------------
-Ở 5 chỗ dưới đây, github.com/zhxlia/Murre làm khác paper. Ta theo CODE vì đó là
-bản đã sinh ra Bảng 2 — số chạy được mới so sánh trực tiếp được.
+KHÁC GÌ SO VỚI CODE PHÁT HÀNH CỦA TÁC GIẢ
+-----------------------------------------
+Code của tác giả (retrieve/retrieve.py, rewrite/sample.py, rewrite/score.py,
+slurm/run.sh) lệch paper ở 5 chỗ. Bản này chọn PAPER ở cả 5:
 
-    | Chỗ            | Paper viết              | Code làm — ta theo cái này      |
-    |----------------|-------------------------|---------------------------------|
-    | Chuẩn hoá      | Norm(s) = (s+1)/2 (App.C)| pos(s) = (s+2)/2               |
-    | Phạm vi hop ≥1 | mọi bảng (§3.3)         | khoá trong pool 100 của turn 0  |
-    | Nhánh mỗi beam | B × B (§3.3)            | 3B × B rồi tỉa còn B            |
-    | Câu cho Removal| luôn câu gốc (§3.4)     | câu viết lại của hop trước      |
-    | Chấm điểm bảng | bảng trên path (Alg.1)  | mọi ứng viên của turn cuối      |
+    | Chỗ             | Code tác giả                  | Ở đây — theo paper           |
+    |-----------------|-------------------------------|------------------------------|
+    | Chuẩn hoá       | pos(s) = (s+2)/2, rồi lấy log | Norm(s) = (s+1)/2 (Eq. C.1)  |
+    | Phạm vi hop ≥2  | khoá trong pool 100 của hop 1 | toàn corpus mỗi hop (§3.3)   |
+    | Nhánh mỗi beam  | 3B ứng viên rồi tỉa còn B     | đúng B → B×B rồi tỉa (§3.3)  |
+    | Câu cho Removal | câu viết lại của hop trước    | luôn CÂU HỎI GỐC q (§3.4)    |
+    | Chấm điểm bảng  | mọi ứng viên của turn cuối    | bảng trên đường đi (Alg. 1)  |
 
-Nguồn: retrieve/retrieve.py, rewrite/sample.py, rewrite/score.py, slurm/run.sh.
-Công thức điểm nằm ở utils/scoring.py.
+Hệ quả cần biết: danh sách trả về chỉ gồm những bảng THỰC SỰ nằm trên một đường
+đi, tối đa B + (H-1)·B² bảng (B=5, H=3 → ≤55, thường ít hơn vì trùng lặp). Muốn
+đo r@K với K lớn thì phải tăng beam_size, không còn pool 100 để đệm nữa.
 
 `run()` cùng giao diện với các method khác (methods/build.py).
 Chạy thử một câu:  python -m methods.murre
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
@@ -72,34 +83,21 @@ class RetrievalPath:
     """Path_h,b của paper (Equation D.1): dãy bảng đã đi qua + similarity từng bước.
 
     `schemas[i]` và `sims[i]` luôn cùng độ dài và cùng thứ tự hop.
-    `query` là câu truy vấn đã dùng ở hop hiện tại — hop kế sẽ viết lại TỪ CÂU NÀY,
-    không phải từ câu hỏi gốc (xem bảng đối chiếu ở đầu file).
+    `query` là câu truy vấn ĐÃ dùng để retrieve bảng cuối cùng của đường đi — hop 1
+    là câu hỏi gốc, các hop sau là câu do Removal sinh ra. Chỉ dùng để log/soi.
     """
 
     schemas: Tuple[str, ...]
     sims: Tuple[float, ...]
     query: str
 
-    def extend(self, hit: Hit) -> "RetrievalPath":
-        """Đường đi mới = đường này nối thêm `hit` vào cuối."""
+    def extend(self, hit: Hit, query: str) -> RetrievalPath:
+        """Đường đi mới = đường này nối thêm `hit` tìm được bằng `query`."""
         return RetrievalPath(
             schemas=self.schemas + (hit.schema,),
             sims=self.sims + (hit.similarity,),
-            query=self.query,
+            query=query,
         )
-
-
-@dataclass(frozen=True)
-class Beam:
-    """Một nhánh đang sống: đường đi, kèm TOÀN BỘ ứng viên mà đường đi đó retrieve ra.
-
-    Giữ cả danh sách ứng viên vì hai bước dùng nó theo hai cách khác nhau:
-        _grow()  chỉ lấy 3B ứng viên đầu để nở nhánh
-        _rank()  dùng CẢ danh sách để chấm điểm bảng
-    """
-
-    path: RetrievalPath
-    candidates: List[Hit]
 
 
 class MurreRetriever:
@@ -109,7 +107,7 @@ class MurreRetriever:
         tables = retriever.run(question, corpus, schema_embeddings)
         sql = retriever.generate_sql(question, tables)
 
-    beam_size / max_hop / top_k_pool để None thì lấy từ cfg.pipeline.
+    beam_size / max_hop để None thì lấy từ cfg.pipeline.
     """
 
     def __init__(
@@ -120,180 +118,113 @@ class MurreRetriever:
         *,
         beam_size: Optional[int] = None,
         max_hop: Optional[int] = None,
-        top_k_pool: Optional[int] = None,
     ) -> None:
         self.encoder: SGPTEncoder = encoder
         self.llm: Optional[LLMGenerator] = llm
 
+        # B và H của paper (§4.1: B = 5, H = 3).
         self.beam_size: int = beam_size if beam_size is not None else cfg.pipeline.beam_size
         self.max_hop: int = max_hop if max_hop is not None else cfg.pipeline.max_hop
-        self.top_k_pool: int = top_k_pool if top_k_pool is not None else cfg.pipeline.top_k_pool
 
-        # sample.py lấy `retrieved[:3*top_k]` với top_k = beam size.
-        self.expand_width: int = 3 * self.beam_size
-
-        self.use_removal: bool = cfg.pipeline.ablation.removal
-        self.use_early_stop: bool = cfg.pipeline.ablation.early_stop
-
-        # Removal cần LLM; Splice (ablation w/o removal) thì không.
-        self.rewriter: Optional[QueryRewriter] = rewriter
-        if self.use_removal and self.rewriter is None:
-            if llm is None:
+        # Removal cần LLM; Splice (ablation w/o removal) thì không. Chế độ Splice để
+        # rewriter=None LUÔN, kể cả khi chỗ gọi có truyền vào — nhờ vậy `_removal()`
+        # chỉ cần xem rewriter có hay không, không phải giữ thêm một cờ song song.
+        self.rewriter: Optional[QueryRewriter] = None
+        if cfg.pipeline.ablation.removal:
+            if rewriter is None and llm is None:
                 raise ValueError(
                     "MurreRetriever cần `rewriter` hoặc `llm` khi ablation.removal=true. "
                     "Đặt removal=false để chạy chế độ Splice không cần LLM."
                 )
-            self.rewriter = QueryRewriter(llm=llm)
+            self.rewriter = rewriter if rewriter is not None else QueryRewriter(llm=llm)
 
     # =========================================================================
-    # Bước a — Retrieval (§3.3, Equation 3.1)
+    # Pha 1 — Retrieval (§3.3, Equation 3.1)
     # =========================================================================
-    @staticmethod
-    def _subqueries(query: str) -> List[str]:
-        """Tách câu truy vấn thành từng sub-query, mỗi dòng một cái.
-
-        Removal có thể trả nhiều bảng trên nhiều dòng; encode riêng để không
-        trung bình hóa các bảng khác nhau vào một vector.
-        """
-        lines: List[str] = [line.strip() for line in query.splitlines() if line.strip()]
-        return lines or [query.strip()]
-
     def _retrieve(
         self,
         query: str,
         corpus: List[str],
         doc_embeddings: torch.Tensor,
         top_k: int,
-        index_map: Optional[Sequence[int]] = None,
     ) -> List[Hit]:
-        """Top-k bảng theo cosine similarity.
+        """Top-k bảng của TOÀN BỘ corpus theo cosine similarity — Equation 3.1.
 
-            doc_embeddings : ma trận ĐÃ chuẩn hoá L2. Turn 0 truyền cả corpus, các
-                             turn sau truyền ma trận con của pool.
-            index_map      : ánh xạ hàng của ma trận con về chỉ số corpus.
-                             None = ma trận đầy đủ, hàng i chính là corpus[i].
+            doc_embeddings : ma trận ĐÃ chuẩn hoá L2, hàng i là vector của corpus[i].
 
-        Nhiều sub-query → mỗi bảng lấy điểm CAO NHẤT (max, không cộng/trung bình).
+        Cả câu truy vấn được encode thành MỘT vector Emb(q_h,b), kể cả khi Removal
+        trả về nhiều bảng trên nhiều dòng — đúng Equation 3.1, không tách sub-query.
         """
-        queries: List[str] = self._subqueries(query=query)
+        text: str = " ".join(query.split()) or query
         q: torch.Tensor = F.normalize(
-            input=self.encoder.encode(texts=queries, is_query=True), p=2, dim=1,
+            input=self.encoder.encode(texts=[text], is_query=True),
+            p=2,
+            dim=1
         )
 
-        # [n_subquery, n_doc] → max theo sub-query → [n_doc]
-        sims: torch.Tensor = (q @ doc_embeddings.T).amax(dim=0)
+        sims: torch.Tensor = (q @ doc_embeddings.T).squeeze(0)
         values, positions = torch.topk(input=sims, k=min(top_k, sims.size(0)))
 
-        def to_corpus_index(row: int) -> int:
-            return index_map[row] if index_map is not None else row
-
         return [
-            Hit(schema=corpus[to_corpus_index(p)], similarity=float(v), index=to_corpus_index(p))
+            Hit(schema=corpus[p], similarity=float(v), index=p)
             for v, p in zip(values.tolist(), positions.tolist())
         ]
 
     # =========================================================================
-    # Bước b — Removal / Completing Tables (§3.4)
+    # Pha 2 — Removal (§3.4)
     # =========================================================================
-    def _next_query(self, query: str, schemas: Sequence[str]) -> Tuple[str, bool]:
-        """Nhờ LLM xoá thông tin của `schemas` khỏi `query`.
+    def _removal(self, question: str, path: RetrievalPath) -> Tuple[str, bool]:
+        """Xoá thông tin các bảng trên `path` khỏi CÂU HỎI GỐC `question`.
 
         Trả về (câu truy vấn cho hop kế, LLM có báo "đủ bảng rồi" hay không).
 
-        `query` là câu của HOP HIỆN TẠI — tức câu đã viết lại ở hop trước, không
-        phải câu hỏi gốc. Xem bảng đối chiếu ở đầu file.
+        §3.4 nói rõ: Removal xoá thông tin của Path_h,b khỏi *the user question q*.
+        Nên tham số truyền vào LUÔN là câu hỏi gốc, còn `path.schemas` là TẤT CẢ
+        bảng từ hop 1 tới hop h trên nhánh đó — không phải chỉ bảng của hop cuối.
         """
-        if not self.use_removal:
-            # Ablation w/o removal: nối câu hỏi với bảng đã có, không gọi LLM.
-            joined: str = " | ".join(schemas)
-            return (f"{query} | {joined}" if joined else query), False
+        if self.rewriter is None:
+            # Ablation w/o removal (§4.3): nối câu hỏi với bảng đã có, không gọi LLM.
+            joined: str = " | ".join(path.schemas)
+            return (f"{question} | {joined}" if joined else question), False
 
-        assert self.rewriter is not None
-        out: str = self.rewriter.rewrite(question=query, retrieved_schemas=list(schemas)).strip()
-        stopped: bool = self.use_early_stop and QueryRewriter.is_early_stop(rewrite_output=out)
-        return out, stopped
+        out: str = self.rewriter.rewrite(
+            question=question,
+            retrieved_schemas=list(path.schemas),
+        ).strip()
+        return out, QueryRewriter.is_early_stop(rewrite_output=out)
 
     # =========================================================================
-    # Ba bước của một hop
+    # Tỉa beam (§3.3 → §3.5)
     # =========================================================================
-    def _grow(self, turn: Sequence[Beam]) -> List[RetrievalPath]:
-        """Nở nhánh rồi tỉa: mỗi beam sinh ≤3B đường đi mới, gộp lại, giữ top-B.
+    def _prune(self, paths: Sequence[RetrievalPath]) -> List[RetrievalPath]:
+        """B×B đường đi → giữ B đường có Score_Path cao nhất.
 
-        Bỏ qua bảng đã nằm trên chính đường đi đó — một đường không đi lại bảng cũ.
+        §3.3: "we then choose B results from these for the subsequent Removal
+        phase, with the selection method detailed in §3.5" — tức dùng đúng
+        Score_Path của §3.5, không có công thức tỉa riêng.
         """
-        grown: List[RetrievalPath] = [
-            beam.path.extend(hit=hit)
-            for beam in turn
-            for hit in beam.candidates[: self.expand_width]
-            if hit.schema not in beam.path.schemas
-        ]
-        grown.sort(key=lambda p: scoring.pruning_score(similarities=p.sims), reverse=True)
-        return grown[: self.beam_size]
-
-    def _removal(
-        self,
-        paths: Sequence[RetrievalPath],
-        corpus: List[str],
-        pool_docs: torch.Tensor,
-        pool: Sequence[int],
-    ) -> Optional[List[Beam]]:
-        """Removal + retrieve cho từng đường đi → turn kế tiếp.
-
-        Trả về None khi LLM báo dừng sớm. Early stop là quyết định của CẢ CÂU HỎI
-        chứ không của riêng một nhánh: score.py đặt end_turn[câu] = turn-1 ngay khi
-        BẤT KỲ nhánh nào báo dừng, rồi chấm điểm bằng turn TRƯỚC đó. Nên trả None là
-        đủ — chỗ gọi giữ nguyên turn hiện tại và đem đi chấm điểm.
-        """
-        next_turn: List[Beam] = []
-        for path in paths:
-            query, stopped = self._next_query(query=path.query, schemas=path.schemas)
-            if stopped:
-                return None
-            next_turn.append(Beam(
-                path=replace(path, query=query),
-                candidates=self._retrieve(
-                    query=query,
-                    corpus=corpus,
-                    doc_embeddings=pool_docs,
-                    top_k=self.top_k_pool,
-                    index_map=pool,
-                ),
-            ))
-        return next_turn
+        ranked: List[RetrievalPath] = sorted(
+            paths, key=lambda p: scoring.path_score(similarities=p.sims), reverse=True,
+        )
+        return ranked[: self.beam_size]
 
     # =========================================================================
-    # Bước cuối — Score (§3.5)
+    # Pha 3 — Score (§3.5, Algorithm 1)
     # =========================================================================
     @staticmethod
-    def _rank(turn: Sequence[Beam], pool_hits: Sequence[Hit]) -> List[RetrievedTable]:
-        """Chấm điểm MỌI ứng viên của turn cuối, không chỉ các bảng nằm trên đường đi.
+    def _rank(all_paths: Sequence[RetrievalPath]) -> List[RetrievedTable]:
+        """Algorithm 1: Score_Table(t) = max Score_Path trên mọi đường đi chứa t.
 
-        Với mỗi beam và mỗi ứng viên `x` mà beam đó retrieve được, điểm là
-        `scoring.table_score(x, đường đi)` — tức chấm x như thể nối nó vào cuối
-        đường đi. Điểm đó gán cho CẢ `x` LẪN mọi bảng trên đường đi, lấy max nếu
-        một bảng được chấm nhiều lần.
-
-        Bảng nào thuộc pool mà không lần nào được chấm thì giữ 0.0 và tự rơi xuống
-        đáy, vì log(pos(sim)) > 0 với mọi sim > 0.
-
-        `pool_hits` (= kết quả turn 0) quyết định TẬP BẢNG được xếp hạng: mọi ứng
-        viên ở các turn sau đều lấy từ pool này nên không có bảng nào lọt ra ngoài.
+        `all_paths` phải là MỌI đường đi từng sinh ra — kể cả đường bị tỉa ở bước
+        _prune và đường dừng sớm — vì §3.5 định nghĩa Path_ti là "all retrieval
+        paths containing table ti", không giới hạn ở B nhánh sống sót.
         """
-        best: Dict[str, float] = {hit.schema: 0.0 for hit in pool_hits}
-
-        for beam in turn:
-            for hit in beam.candidates:
-                score: float = scoring.table_score(
-                    candidate_similarity=hit.similarity,
-                    path_similarities=beam.path.sims,
-                )
-                for schema in (hit.schema, *beam.path.schemas):
-                    if score > best[schema]:
-                        best[schema] = score
-
+        scores: Dict[str, float] = scoring.score_tables(
+            paths=((p.schemas, p.sims) for p in all_paths),
+        )
         return [
             RetrievedTable(schema=schema, score=score)
-            for schema, score in sorted(best.items(), key=lambda kv: kv[1], reverse=True)
+            for schema, score in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         ]
 
     # =========================================================================
@@ -310,63 +241,91 @@ class MurreRetriever:
         # Chuẩn hoá corpus MỘT lần cho cả câu hỏi thay vì mỗi lần _retrieve.
         docs: torch.Tensor = F.normalize(input=schema_embeddings, p=2, dim=1)
 
-        # --- turn 0: toàn corpus, câu hỏi GỐC không tabulate (Appendix K) ----
-        pool_hits: List[Hit] = self._retrieve(
+        # --- hop 1: câu hỏi GỐC, không tabulate (Appendix K) -----------------
+        first_hits: List[Hit] = self._retrieve(
             query=question,
             corpus=corpus,
             doc_embeddings=docs,
-            top_k=self.top_k_pool
+            top_k=self.beam_size
         )
-        if not pool_hits:
+        if not first_hits:
             return []
 
-        # Pool cố định cho mọi turn sau. run.sh truyền `--last_retrieved_file turn0`
-        # cho CẢ hop 2 lẫn hop 3, nên luôn là kết quả turn 0, không phải turn trước.
-        pool: List[int] = [hit.index for hit in pool_hits]
-        pool_docs: torch.Tensor = docs[pool]
-
-        turn: List[Beam] = [Beam(
-            path=RetrievalPath(schemas=(), sims=(), query=question),
-            candidates=pool_hits,
-        )]
+        empty: RetrievalPath = RetrievalPath(schemas=(), sims=(), query=question)
+        frontier: List[RetrievalPath] = [
+            empty.extend(hit=hit, query=question) for hit in first_hits
+        ]
+        all_paths: List[RetrievalPath] = list(frontier)
         if verbose:
-            self._log_turn_0(pool_hits=pool_hits)
+            self._log_hop(hop=1, paths=frontier)
 
-        # --- turn 1 .. max_hop-1 --------------------------------------------
-        # max_hop ĐẾM CẢ turn 0: max_hop=3 → turn 0, 1, 2, tức chỉ 2 vòng ở đây.
+        # --- hop 2 .. H -------------------------------------------------------
+        # max_hop ĐẾM CẢ hop 1: max_hop=3 → hop 1, 2, 3, tức 2 vòng Removal.
         # Table 5 của paper cũng vậy — "max hop 1" nghĩa là single-hop.
-        for hop in range(1, self.max_hop):
-            paths: List[RetrievalPath] = self._grow(turn=turn)
-            if not paths:
-                break
+        for hop in range(2, self.max_hop + 1):
+            grown: List[RetrievalPath] = []
+            num_stopped: int = 0
 
-            next_turn: Optional[List[Beam]] = self._removal(
-                paths=paths, corpus=corpus, pool_docs=pool_docs, pool=pool,
-            )
-            if next_turn is None:
+            for path in frontier:
+                next_query, stopped = self._removal(question=question, path=path)
+                if stopped:
+                    # §3.4 + Figure 2: early stop là quyết định của RIÊNG nhánh này.
+                    # Nhánh đóng băng tại đây nhưng vẫn nằm trong all_paths để chấm
+                    # điểm; các nhánh khác đi tiếp bình thường.
+                    num_stopped += 1
+                    continue
+
+                # Retrieval của hop này: câu Removal quét toàn corpus, lấy top-B.
+                hits: List[Hit] = self._retrieve(
+                    query=next_query,
+                    corpus=corpus,
+                    doc_embeddings=docs,
+                    top_k=self.beam_size,
+                )
+
+                # Bỏ bảng đã nằm trên chính đường đi này: đi lại thì không thêm được
+                # thông tin gì — Removal lẽ ra đã xoá nó khỏi câu hỏi.
+                new_hits: List[Hit] = [
+                    hit for hit in hits if hit.schema not in path.schemas
+                ]
+
+                # Mỗi bảng còn lại nối vào cuối đường đi thành một đường đi mới.
+                for hit in new_hits:
+                    grown.append(path.extend(hit=hit, query=next_query))
+
+            if verbose and num_stopped:
+                logger.info(f"[MURRE] Hop {hop}: {num_stopped} nhánh early stop")
+
+            if not grown:
                 if verbose:
-                    logger.info(f"[MURRE] Turn {hop}: early stop → chấm bằng turn {hop - 1}")
+                    logger.info(f"[MURRE] Hop {hop}: không còn nhánh nào để nở → dừng")
                 break
 
-            turn = next_turn
+            # Mọi đường đi sinh ra đều được chấm điểm; chỉ B đường tốt nhất đi tiếp.
+            all_paths.extend(grown)
+            frontier = self._prune(paths=grown)
             if verbose:
-                logger.info(f"[MURRE] Turn {hop}: giữ {len(turn)} nhánh")
+                self._log_hop(hop=hop, paths=frontier, grown=len(grown))
 
-        results: List[RetrievedTable] = self._rank(turn=turn, pool_hits=pool_hits)
+        results: List[RetrievedTable] = self._rank(all_paths=all_paths)
         if verbose:
-            self._log_results(results=results)
+            self._log_results(results=results, num_paths=len(all_paths))
         return results
 
     # -- Log ------------------------------------------------------------------
     @staticmethod
-    def _log_turn_0(pool_hits: Sequence[Hit]) -> None:
-        logger.info(f"[MURRE] Turn 0: pool {len(pool_hits)} bảng")
-        for hit in pool_hits[:3]:
-            logger.info(f"  {hit.similarity:.4f}  {hit.schema}")
+    def _log_hop(
+        hop: int, paths: Sequence[RetrievalPath], grown: Optional[int] = None,
+    ) -> None:
+        origin: str = f"{grown} ứng viên → " if grown is not None else ""
+        logger.info(f"[MURRE] Hop {hop}: {origin}giữ {len(paths)} nhánh")
+        for path in paths[:3]:
+            score: float = scoring.path_score(similarities=path.sims)
+            logger.info(f"   {score:.4f}  {' -> '.join(path.schemas)}")
 
     @staticmethod
-    def _log_results(results: Sequence[RetrievedTable]) -> None:
-        logger.info(f"[MURRE] Xong: {len(results)} bảng | top-3:")
+    def _log_results(results: Sequence[RetrievedTable], num_paths: int) -> None:
+        logger.info(f"[MURRE] Xong: {num_paths} đường đi → {len(results)} bảng | top-3:")
         for table in results[:3]:
             logger.info(f"   {table.score:.4f}  {table.schema}")
 
@@ -441,8 +400,7 @@ if __name__ == "__main__":
     ab = cfg.pipeline.ablation
     print(
         f"\n  Cấu hình: beam_size={cfg.pipeline.beam_size}, max_hop={cfg.pipeline.max_hop}, "
-        f"top_k_pool={cfg.pipeline.top_k_pool}, removal={ab.removal}, "
-        f"tabulation={ab.tabulation}, early_stop={ab.early_stop}"
+        f"removal={ab.removal}, tabulation={ab.tabulation}"
     )
 
     run_one_question(

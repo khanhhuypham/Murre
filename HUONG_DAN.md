@@ -2,8 +2,9 @@
 
 Tái tạo thực nghiệm của bài báo **MURRE: Multi-Hop Table Retrieval with Removal for
 Open-Domain Text-to-SQL** (COLING 2025) — bao gồm phương pháp chính (MURRE), 2
-baseline so sánh (Single-hop, CRUSH), và 3 biến thể ablation (w/o removal, w/o
-tabulation, w/o early stop) dùng để tái tạo Table 2, 3 và 4 của paper.
+baseline so sánh (Single-hop, CRUSH), và 2 biến thể ablation (w/o removal, w/o
+tabulation) dùng để tái tạo Table 2, 3 và 4 của paper. Early Stop luôn bật, không
+có cờ để tắt.
 
 ## Mục Lục
 
@@ -72,7 +73,7 @@ MURRE/                               ← Thư mục gốc (Working Directory khi
 │   ├── utils/
 │   │   ├── schema.py                ← build_schema_corpus, pack_table, filter
 │   │   ├── metrics.py               ← recall@K, complete_recall@K
-│   │   ├── scoring.py               ← Norm(s) và Score_Path (§3.5, Appendix C)
+│   │   ├── scoring.py               ← Norm(s), Score_Path, Score_Table (§3.5, App. C/D/E)
 │   │   ├── display.py               ← print_results(): in bảng kết quả ra terminal
 │   │   └── logger.py                ← Logger dùng chung
 │   └── dataset/
@@ -132,7 +133,6 @@ Các tham số quan trọng nhất:
 | `pipeline.max_hop` | `3` | `PipelineConfig` (config.py) | H trong paper |
 | `pipeline.ablation.removal` | `True` | `AblationConfig` (config.py) | `False` = "w/o removal" (Table 4) |
 | `pipeline.ablation.tabulation` | `True` | `AblationConfig` (config.py) | `False` = "w/o tabulation" (Table 4) |
-| `pipeline.ablation.early_stop` | `True` | `AblationConfig` (config.py) | `False` = "w/o early stop" (Table 4) |
 | `run_option.mode` | `batch` | `RunOptionConfig` (config.py) | `one_question` (Option 1) hoặc `batch` (Option 2) |
 | `encoder.model_name` | SGPT-125M | `config.yaml` | Model THẬT được nạp, và cũng là **nguồn duy nhất** của nhãn thư mục `outputs/` (xem `cfg.encoder.slug`) — đổi model là outputs/ tự tách, không có biến nào phải sửa kèm |
 | `encoder.batch_size` | `256` | `config.yaml` | Giảm nếu hết RAM |
@@ -278,9 +278,10 @@ Top-5 bảng retrieve được:
 | | `--beam_size` | Ghi đè `pipeline.beam_size` |
 | | `--max_hop` | Ghi đè `pipeline.max_hop` |
 
-`--beam_size` / `--max_hop` rất hữu ích khi debug MURRE: mặc định beam 5 × 3 hop là
-15 lần gọi LLM cho **một** câu hỏi, giảm xuống `--beam_size 2 --max_hop 1` chỉ còn 2
-lần.
+`--beam_size` / `--max_hop` rất hữu ích khi debug MURRE: Removal chỉ chạy ở hop 2..H
+nên mặc định beam 5 × 3 hop là `(3-1) × 5 = 10` lần gọi LLM cho **một** câu hỏi;
+`--beam_size 2 --max_hop 2` còn 2 lần, `--max_hop 1` thì không gọi LLM lần nào
+(đúng nghĩa single-hop).
 
 ```bash
 # CRUSH: xem LLM hallucinate ra schema gì rồi mới retrieve
@@ -291,7 +292,7 @@ python -m methods.crush --question "..."
 python -m methods.crush --question "..." --no-collective
 
 # MURRE debug nhanh, in từng hop
-python -m methods.murre --verbose --beam_size 2 --max_hop 1
+python -m methods.murre --verbose --beam_size 2 --max_hop 2
 ```
 
 `methods.crush` in thêm danh sách bảng mà LLM đoán ra trước khi retrieve — chỗ hay
@@ -299,7 +300,7 @@ sai nhất của CRUSH. `methods.murre` in cấu hình đang dùng ở dòng đ�
 lẫn giữa các lần chạy ablation:
 
 ```
-  Cấu hình: beam_size=2, max_hop=1, removal=True, tabulation=True, early_stop=True
+  Cấu hình: beam_size=2, max_hop=1, removal=True, tabulation=True
 ```
 
 ## 5. Option 2 — Batch (toàn dataset)
@@ -321,7 +322,7 @@ Cả 3 method đi CHUNG một đường: `run_batch()` → `run_pipeline()` → 
 
 | `pipeline.method` | Lớp chạy | Các bước |
 |---|---|---|
-| `murre` | `MurreRetriever` (`methods/murre.py`) | hop 0 toàn corpus → `[Completing Tables → retrieve trong pool → tỉa beam] × max_hop` → Score_Path/Score_Table → sinh SQL |
+| `murre` | `MurreRetriever` (`methods/murre.py`) | hop 1 toàn corpus lấy top-B → `[Removal trên câu hỏi gốc → retrieve toàn corpus top-B → tỉa còn B] × (max_hop-1)` → Score_Path/Score_Table (Alg. 1) → sinh SQL |
 | `single_hop` | `SingleHopRetriever` | retrieve một lần trên toàn corpus |
 | `crush` | `CrushRetriever` | LLM hallucinate schema → retrieve |
 
@@ -347,8 +348,9 @@ LIMIT: int | None = 8
 ### 5b. Xem chi tiết từng hop khi debug
 
 Không còn file trung gian để mở ra xem: `MurreRetriever` giữ toàn bộ beam search trong
-RAM. Muốn theo dõi từng hop thì chạy Option 1 với `verbose=True` — nó in pool hop 0,
-số ứng viên và số beam giữ lại ở mỗi hop, beam nào early-stop, và top-3 cuối cùng:
+RAM. Muốn theo dõi từng hop thì chạy Option 1 với `verbose=True` — nó in các nhánh của
+hop 1, số ứng viên và số beam giữ lại ở mỗi hop, bao nhiêu nhánh early-stop, và
+top-3 cuối cùng:
 
 ```bash
 python -m methods.murre
@@ -367,8 +369,9 @@ Hai bước vẫn chạy riêng được:
 `steps.embed` không bắt buộc — mọi đường chạy đều tự encode và lưu cache khi thiếu.
 Chạy trước cho xong hữu ích với BirdUnion (mất vài phút trên CPU).
 
-**Chi phí LLM.** Mỗi hop gọi LLM `beam_size` lần cho mỗi câu hỏi — với Spider dev
-(658 câu), beam 5 × 3 hop là ~9.870 lần gọi. Model local qua Ollama thì miễn phí
+**Chi phí LLM.** Mỗi hop từ hop 2 trở đi gọi LLM `beam_size` lần cho mỗi câu hỏi,
+tức `(max_hop - 1) × beam_size` lần — với Spider dev (658 câu), beam 5 × 3 hop là
+~6.580 lần gọi (Appendix J của paper: O(B·H·n)). Model local qua Ollama thì miễn phí
 nhưng mất nhiều giờ; muốn kiểm tra pipeline chạy đúng thì đặt `LIMIT` nhỏ trong
 `main.py`, hoặc giảm `beam_size = 2` và `max_hop = 1` trong `PipelineConfig`.
 
@@ -433,27 +436,22 @@ gốc dùng `gpt-3.5-turbo` (§4.1).
 ## 7. Tái tạo Table 4 — Ablation Study
 
 Giữ `pipeline.method = "murre"`, chỉ đổi từng cờ trong class `AblationConfig`
-(`src/config.py`) — mỗi lần đổi 1 cờ, giữ 2 cờ còn lại = `True`, đúng thiết kế
+(`src/config.py`) — mỗi lần đổi 1 cờ, giữ cờ còn lại = `True`, đúng thiết kế
 ablation "chỉ tắt một cơ chế mỗi lần" của paper:
 
 ```python
 class AblationConfig(BaseModel):
     removal: bool = False      # → "w/o removal" — python -m main (mode: batch)
     tabulation: bool = True
-    early_stop: bool = True
 ```
 ```python
 class AblationConfig(BaseModel):
     removal: bool = True
     tabulation: bool = False   # → "w/o tabulation"
-    early_stop: bool = True
 ```
-```python
-class AblationConfig(BaseModel):
-    removal: bool = True
-    tabulation: bool = True
-    early_stop: bool = False   # → "w/o early stop"
-```
+
+Biến thể "w/o early stop" của Table 4 không tái tạo được bằng config: Early Stop
+đã thành cơ chế cố định của pipeline.
 
 **Lưu ý:** đường dẫn output phân biệt theo `{dataset}/{model}/{method}` — KHÔNG
 phân biệt theo cờ ablation. Chạy nhiều lần ablation trên cùng model + method thì
@@ -542,7 +540,8 @@ curl "http://localhost:8000/evaluate/available"
   cột `r@K` / `k = K` trong Table 2 của paper.
 - `num_questions`: số câu hỏi thực có trong file. **Kiểm tra số này** — nếu là 20
   thay vì 658 thì lần chạy đó dùng `--limit`, không so được với paper.
-- `retrieved_depth`: số bảng đã lưu mỗi câu (chính là `pipeline.top_k_pool`), là
+- `retrieved_depth`: số bảng đã lưu mỗi câu (`pipeline.top_k_pool` với single_hop/crush;
+  với murre là số bảng nằm trên đường đi, tối đa `B + (max_hop-1)·B²`), là
   giới hạn trên của `k`.
 
 Các trường hợp lỗi:
