@@ -1,11 +1,11 @@
-torch>=2.0.0
-transformers>=4.35.0
-openai>=1.0.0
-python-dotenv>=1.0.0
-scipy>=1.11.0
-tqdm>=4.66.0
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-pydantic>=2.0.0
-numpy>=1.24.0
-PyYAML>=6.0.0
+# Runtime. Chốt trần major để `pip install -r` không kéo về bản breaking.
+# CPU-only torch: xem README (Dockerfile đã dùng index CPU sẵn).
+torch>=2.0,<3
+transformers>=4.35,<6
+openai>=1.0,<3
+httpx>=0.27,<1
+python-dotenv>=1.0,<2
+PyYAML>=6.0,<7
+pydantic>=2.0,<3
+fastapi>=0.104,<1
+uvicorn[standard]>=0.24,<1

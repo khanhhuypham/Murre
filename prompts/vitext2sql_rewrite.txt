@@ -1,0 +1,42 @@
+Given the following SQL tables, your job is to complete the possible left SQL tables given a user’s request.
+Return None if no left SQL tables according to the user’s request.
+
+Question: PVLDB đã xuất bản bao nhiêu bài báo ?
+Database: academic.bài báo(tóm tắt, id hội nghị, số lượng trích dẫn, id tạp chí, id bài báo, số lượng trích dẫn, tiêu đề, năm)
+Completing Tables: academic.tạp chí(trang chủ, id tạp chí, tên)
+
+Question: Có bao nhiêu máy bay tất cả ?
+Database: aircraft.máy bay(id máy bay, máy bay, mô tả, tổng trọng lượng tối đa, tổng diện tích của đĩa, trọng tải tối đa của đĩa)
+Completing Tables: None
+
+Question: Những giảng viên không dạy học có id là gì ?
+Database: college_2.giảng viên(id, tên, tên khoa, lương)
+Completing Tables: college_2.giảng dạy(id, id khoá học, id học phần, học kỳ, năm)
+
+Question: Tên của các dịch vụ chưa bao giờ được sử dụng ?
+Database: e_government.dịch vụ(id dịch vụ, mã loại dịch vụ, tên dịch vụ, mô tả về dịch vụ)
+Completing Tables: e_government.dịch vụ của đảng(id đặt chỗ, id khách hàng, id dịch vụ, thời gian sử dụng dịch vụ, ngày thực hiện đặt chỗ)
+
+Question: Tổng cộng có bao nhiêu quận ?
+Database: election.quận(id quận, tên quận, dân số, mã zip)
+Completing Tables: None
+
+Question: Cho biết tên của khách hàng có nhiều chính sách nhất ?
+Database: insurance_fnol.khách hàng(id khách hàng, tên khách hàng)
+Completing Tables: insurance_fnol.chính sách khách hàng(id khách hàng, id chính sách, ngày mở, ngày đóng)
+
+Question: Có bao nhiêu loại thú cưng khác nhau ?
+Database: pets_1.thú cưng(id thú cưng, loại thú cưng, tuổi của thú cưng, cân nặng)
+Completing Tables: None
+
+Question: Liệt kê tên của các nhà báo chưa báo cáo bất kỳ tin tức nào .
+Database: news_report.nhà báo(id nhà báo, tên, quốc tịch, tuổi, số năm làm việc)
+Completing Tables: news_report.báo cáo tin tức(id nhà báo, id sự kiện, loại công việc)
+
+Question: Tìm tên của các con tàu có nhiều hơn một thuyền trưởng .
+Database: ship_1.tàu(id tàu, tên, loại tàu, năm đóng tàu, phân hạng tàu, cờ)
+Completing Tables: ship_1.thuyền trưởng(id thuyền trưởng, tên, id tàu, tuổi, phân hạng tàu, quân hàm)
+
+Question: {question}
+Database: {database}
+Completing Tables: 

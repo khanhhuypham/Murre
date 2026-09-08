@@ -3,19 +3,17 @@ from __future__ import annotations
 
 from typing import List
 
-from enums import Dataset
 from pydantic import BaseModel, Field
 
+from schemas.common import QuestionRequest
 
-class SqlRequest(BaseModel):
-    """Body của POST /sql."""
 
-    question: str = Field(..., description="Câu hỏi tự nhiên cần chuyển thành SQL")
-    dataset: Dataset = Field(default=Dataset.SPIDER, description="Dataset: 'spider' hoặc 'bird'")
-    top_k: int = Field(
-        default=5, ge=1, le=20,
-        description="Số bảng top-đầu đưa vào prompt sinh SQL (paper dùng 5)",
-    )
+class SqlRequest(QuestionRequest):
+    """Body của POST /sql — câu hỏi → bảng liên quan → câu lệnh SQL.
+
+    Cùng bộ tham số với POST /retrieve (xem schemas/common.py): question, dataset,
+    top_k. Ở đây `top_k` là số bảng đưa vào prompt sinh SQL.
+    """
 
 
 class SqlResponse(BaseModel):

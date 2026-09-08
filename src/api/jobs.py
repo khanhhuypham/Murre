@@ -7,14 +7,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import HTTPException
 from starlette.datastructures import State
 
 from api.evaluator import evaluate_run
 from config import cfg
 from enums import JobStatus
-from methods.runner import run_pipeline
 from models.errors import AppError
+from pipeline.runner import run_pipeline
 from schemas.pipeline import PipelineJob, PipelineRunRequest
 from utils import logger
 
@@ -34,29 +33,16 @@ def run_job(state: State, job_id: str, req: PipelineRunRequest) -> None:
         job.total = total
 
     try:
-        # Khong truyen model: giu nguyen encoder.slug cua server (xem
-        # PipelineRunRequest).
-        run_pipeline(
-            dataset=req.dataset,
-            method=req.method,
-            limit=req.limit,
-            on_progress=on_progress,
-        )
+        # Không truyền model: encoder do server quyết định (xem PipelineRunRequest).
+        run_pipeline(dataset=req.dataset, limit=req.limit, on_progress=on_progress)
         # Đọc lại metric bằng đúng đường code của /evaluate → hai endpoint không thể
         # lệch số nhau, và cũng xác nhận file vừa ghi đọc được thật.
-        job.result = evaluate_run(
-            dataset=req.dataset,
-            model=cfg.encoder.slug,
-            method=req.method,
-            k=req.k,
-        )
+        job.result = evaluate_run(dataset=req.dataset, model=cfg.encoder_for(req.dataset).slug, k=req.k)
         job.status = JobStatus.SUCCEEDED
     except AppError as e:
+        logger.warning(f"[API] Job {job_id} thất bại: {e}")
         job.status = JobStatus.FAILED
-        job.error = str(e)
-    except HTTPException as e:
-        job.status = JobStatus.FAILED
-        job.error = f"{e.status_code}: {e.detail}"
+        job.error = e.message
     except Exception as e:
         logger.exception(f"[API] Job {job_id} thất bại")
         job.status = JobStatus.FAILED

@@ -78,7 +78,7 @@ def compute_res(
 
     Tham số:
         top_k : danh sách các giá trị K (ví dụ: [3, 5, 10, 20])
-        data  : các record của file result/turn{H}/dev.json — xem models/records.py.
+        data  : các record của file turn{H}/dev.json — xem models/records.py.
                 Đọc từ file thì dùng ResultRecord.from_list(json.load(f)).
 
     Trả về:

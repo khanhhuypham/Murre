@@ -7,8 +7,7 @@
 #   2. filter_ret_tables_from_db() → lọc DB dict chỉ giữ các bảng đã retrieve
 #   3. pack_table()                → render DB dict thành CREATE TABLE SQL
 #
-# Nhóm 2 và 3 chỉ dùng ở steps/infer.py (bước sinh SQL); nhóm 1 dùng ở cả
-# core/corpus.py và api/dependencies.py.
+# Nhóm 2 và 3 chỉ dùng ở pipeline/sql.py (bước sinh SQL); nhóm 1 dùng ở core/corpus.py.
 #
 # Trung thành với implement của tác giả trong retrieve/utils.py
 # =============================================================================

@@ -1,4 +1,4 @@
-"""MURRE: retrieve bảng đa hop bằng beam search → xếp hạng bảng → sinh SQL.
+"""MURRE: retrieve bảng đa hop bằng beam search rồi xếp hạng bảng.
 
 Bản cài đặt này BÁM THEO PAPER (COLING 2025, §3.2–3.5 + Appendix C/D/E), không
 bám theo code phát hành ở github.com/zhxlia/Murre. Xem mục cuối docstring để biết
@@ -46,10 +46,7 @@ slurm/run.sh) lệch paper ở 5 chỗ. Bản này chọn PAPER ở cả 5:
 
 Hệ quả cần biết: danh sách trả về chỉ gồm những bảng THỰC SỰ nằm trên một đường
 đi, tối đa B + (H-1)·B² bảng (B=5, H=3 → ≤55, thường ít hơn vì trùng lặp). Muốn
-đo r@K với K lớn thì phải tăng beam_size, không còn pool 100 để đệm nữa.
-
-`run()` cùng giao diện với các method khác (methods/build.py).
-Chạy thử một câu:  python -m methods.murre
+đo r@K với K lớn thì phải tăng beam_size.
 """
 from __future__ import annotations
 
@@ -60,7 +57,7 @@ import torch
 import torch.nn.functional as F
 
 from config import cfg
-from core.encoder import SGPTEncoder
+from core.encoder import Encoder
 from core.llm import LLMGenerator
 from core.rewriter import QueryRewriter
 from models.retrieval import RetrievedTable
@@ -91,7 +88,7 @@ class RetrievalPath:
     sims: Tuple[float, ...]
     query: str
 
-    def extend(self, hit: Hit, query: str) -> RetrievalPath:
+    def extend(self, hit: Hit, query: str) -> "RetrievalPath":
         """Đường đi mới = đường này nối thêm `hit` tìm được bằng `query`."""
         return RetrievalPath(
             schemas=self.schemas + (hit.schema,),
@@ -103,7 +100,7 @@ class RetrievalPath:
 class MurreRetriever:
     """MURRE đầy đủ, chạy trong RAM, không đọc/ghi file trung gian.
 
-        retriever = MurreRetriever(encoder=encoder, rewriter=rewriter)
+        retriever = MurreRetriever(encoder=encoder, rewriter=rewriter, llm=llm)
         tables = retriever.run(question, corpus, schema_embeddings)
         sql = retriever.generate_sql(question, tables)
 
@@ -112,31 +109,27 @@ class MurreRetriever:
 
     def __init__(
         self,
-        encoder: SGPTEncoder,
+        encoder: Encoder,
         rewriter: Optional[QueryRewriter] = None,
         llm: Optional[LLMGenerator] = None,
         *,
         beam_size: Optional[int] = None,
         max_hop: Optional[int] = None,
     ) -> None:
-        self.encoder: SGPTEncoder = encoder
+        if rewriter is None and llm is None:
+            raise ValueError(
+                "MurreRetriever cần `rewriter` hoặc `llm` cho pha Removal (§3.4)."
+            )
+
+        self.encoder: Encoder = encoder
         self.llm: Optional[LLMGenerator] = llm
+        self.rewriter: QueryRewriter = (
+            rewriter if rewriter is not None else QueryRewriter(llm=llm)
+        )
 
         # B và H của paper (§4.1: B = 5, H = 3).
         self.beam_size: int = beam_size if beam_size is not None else cfg.pipeline.beam_size
         self.max_hop: int = max_hop if max_hop is not None else cfg.pipeline.max_hop
-
-        # Removal cần LLM; Splice (ablation w/o removal) thì không. Chế độ Splice để
-        # rewriter=None LUÔN, kể cả khi chỗ gọi có truyền vào — nhờ vậy `_removal()`
-        # chỉ cần xem rewriter có hay không, không phải giữ thêm một cờ song song.
-        self.rewriter: Optional[QueryRewriter] = None
-        if cfg.pipeline.ablation.removal:
-            if rewriter is None and llm is None:
-                raise ValueError(
-                    "MurreRetriever cần `rewriter` hoặc `llm` khi ablation.removal=true. "
-                    "Đặt removal=false để chạy chế độ Splice không cần LLM."
-                )
-            self.rewriter = rewriter if rewriter is not None else QueryRewriter(llm=llm)
 
     # =========================================================================
     # Pha 1 — Retrieval (§3.3, Equation 3.1)
@@ -182,16 +175,11 @@ class MurreRetriever:
         Nên tham số truyền vào LUÔN là câu hỏi gốc, còn `path.schemas` là TẤT CẢ
         bảng từ hop 1 tới hop h trên nhánh đó — không phải chỉ bảng của hop cuối.
         """
-        if self.rewriter is None:
-            # Ablation w/o removal (§4.3): nối câu hỏi với bảng đã có, không gọi LLM.
-            joined: str = " | ".join(path.schemas)
-            return (f"{question} | {joined}" if joined else question), False
-
         out: str = self.rewriter.rewrite(
             question=question,
             retrieved_schemas=list(path.schemas),
         ).strip()
-        return out, QueryRewriter.is_early_stop(rewrite_output=out)
+        return out, self.rewriter.is_early_stop(rewrite_output=out)
 
     # =========================================================================
     # Tỉa beam (§3.3 → §3.5)
@@ -340,73 +328,14 @@ class MurreRetriever:
     ) -> str:
         """Sinh SQL từ top-K bảng đã retrieve. Cần truyền `llm=` khi dựng retriever."""
         if self.llm is None:
-            raise ValueError("generate_sql() cần LLMGenerator — truyền `llm=` khi dựng retriever.")
-        k: int = top_k if top_k is not None else cfg.pipeline.top_n_output
-        return build_sql(llm=self.llm, question=question, schemas=[t.schema for t in tables[:k]])
+            raise ValueError(
+                "generate_sql() cần LLMGenerator — truyền `llm=` khi dựng retriever."
+            )
+        # Import trong thân hàm: pipeline.sql kéo theo dataset/loader, mà nó chỉ cần
+        # thiết cho bước sinh SQL chứ không cho retrieval.
+        from pipeline.sql import build_sql
 
-
-def build_sql(llm: LLMGenerator, question: str, schemas: Sequence[str]) -> str:
-    """Prompt zero-shot → SQL. Hàm rời để /sql dùng được với mọi method.
-
-    Dùng chung hàm dựng prompt với steps/infer.py để hai đường sinh SQL không
-    lệch nhau; import trong thân hàm vì steps/ kéo theo dataset/loader.
-    """
-    from dataset.loader import load_tables
-    from steps.infer import _ZERO_SHOT_PROMPT, _build_table_prompt
-    from utils.schema import build_db_index
-
-    if not schemas:
-        raise ValueError("Không có bảng nào để sinh SQL.")
-
-    dbs: Dict[str, Dict] = build_db_index(tables=load_tables())
-    prompt: str = _ZERO_SHOT_PROMPT.format(
-        table=_build_table_prompt(schema_strings=list(schemas), dbs_dict=dbs),
-        question=question,
-    )
-    sql: str = llm.generate(prompt=prompt).strip()
-    if not sql.lower().startswith("select"):
-        sql = "select " + sql
-    return " ".join(sql.split())
-
-
-# =============================================================================
-# ĐIỂM CHẠY ĐỘC LẬP — thử MURRE trên MỘT câu hỏi
-# =============================================================================
-if __name__ == "__main__":
-    from dataset.loader import load_dev
-    from enums import Method
-    from methods.runner import run_one_question
-
-    # --- Chỉnh trực tiếp mấy biến này để test ------------------------------
-    DATASET: Optional[str] = None    # None → theo general.dataset
-    if DATASET:
-        cfg.general.dataset = DATASET
-
-    # Câu số 21 của dev.json cần 3 bảng — đúng ca multi-hop mà MURRE nhắm tới.
-    QUESTION: Optional[str] = load_dev()[21]["utterance"]
-    TOP_N: int = 5
-    LLM_PROFILE: Optional[str] = None
-    VERBOSE: bool = True
-    BEAM_SIZE: Optional[int] = None  # None → theo pipeline.beam_size
-    MAX_HOP: Optional[int] = None    # None → theo pipeline.max_hop
-    # ----------------------------------------------------------------------
-
-    # Ghi đè TRƯỚC khi dựng pipeline: __init__ đọc cfg một lần duy nhất.
-    if BEAM_SIZE is not None:
-        cfg.pipeline.beam_size = BEAM_SIZE
-    if MAX_HOP is not None:
-        cfg.pipeline.max_hop = MAX_HOP
-
-    ab = cfg.pipeline.ablation
-    print(
-        f"\n  Cấu hình: beam_size={cfg.pipeline.beam_size}, max_hop={cfg.pipeline.max_hop}, "
-        f"removal={ab.removal}, tabulation={ab.tabulation}"
-    )
-
-    run_one_question(
-        method=Method.MURRE,
-        question=QUESTION,
-        top_n=TOP_N,
-        verbose=VERBOSE,
-        llm_profile=LLM_PROFILE,
-    )
+        k: int = top_k if top_k is not None else cfg.pipeline.top_k_output
+        return build_sql(
+            llm=self.llm, question=question, schemas=[t.schema for t in tables[:k]],
+        )

@@ -1,7 +1,6 @@
 """utils/display.py — In kết quả retrieve ra terminal cho người đọc.
 
-Dùng chung cho main.py và khối `__main__` của 3 file trong methods/, để không phải
-viết lại phần in 4 lần.
+Chỉ dùng ở đường CLI (`python -m cli ask`); API trả JSON nên không đi qua đây.
 """
 from __future__ import annotations
 
@@ -12,19 +11,13 @@ from dataset.loader import gold_for
 from models.retrieval import RetrievedTable
 
 
-def print_results(
-    method: str,
-    question: str,
-    results: List[RetrievedTable],
-    top_n: int,
-) -> None:
+def print_results(question: str, results: List[RetrievedTable], top_k: int) -> None:
     """In kết quả retrieve, đánh dấu ✓ vào bảng trùng gold (nếu tra được gold)."""
     gold: List[str] = gold_for(question=question)
 
     print()
     print("=" * 78)
-    print(f"  METHOD  : {method}")
-    print(f"  DATASET : {cfg.general.dataset} | ENCODER: {cfg.encoder.model_name}")
+    print(f"  DATASET : {cfg.general.dataset} | ENCODER: {cfg.encoder_for().model_name}")
     print(f"  QUESTION: {question}")
     print("=" * 78)
 
@@ -33,9 +26,9 @@ def print_results(
         for g in gold:
             print(f"  - {g}")
 
-    print(f"\nTop-{top_n} bảng retrieve được:")
+    print(f"\nTop-{top_k} bảng retrieve được:")
     hits: int = 0
-    for i, r in enumerate(results[:top_n], start=1):
+    for i, r in enumerate(results[:top_k], start=1):
         mark: str = " "
         if gold and r.schema in gold:
             mark = "✓"
@@ -43,5 +36,5 @@ def print_results(
         print(f"  {mark} {i:>2}. {r.score:.4f}  {r.schema}")
 
     if gold:
-        print(f"\n  → recall@{top_n} = {hits}/{len(gold)} = {hits / len(gold):.2%}")
+        print(f"\n  → recall@{top_k} = {hits}/{len(gold)} = {hits / len(gold):.2%}")
     print("=" * 78)

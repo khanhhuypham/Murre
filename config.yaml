@@ -1,46 +1,124 @@
 # =============================================================================
-# config.yaml — Cấu hình encoder SGPT và LLM của MURRE
+# config.yaml — TOÀN BỘ cấu hình MURRE. Chỉ một file này, cho mọi dataset.
+#
+# Mặc định của MỌI khoá nằm trong src/config.py; file này chỉ khai những gì cần
+# đổi. Hai khối `encoders` và `llm` là BẮT BUỘC (chúng quyết định model nào được
+# tải về, có mặc định thì khai thiếu sẽ chạy nhầm model trong im lặng).
+#
+# Đổi dataset chỉ cần sửa MỘT dòng `general.dataset` — encoder tự đi theo, vì mỗi
+# dataset khai encoder của nó ở khối `datasets`.
+#
+# Xem cấu hình đang thực sự hiệu lực:  cd src && python -m cli config
+#
+# BÍ MẬT KHÔNG ĐỂ Ở ĐÂY: file này nằm trong git. API key đi qua .env
+# (OPENAI_API_KEY, OPENAI_BASE_URL) — chúng ghi đè profile LLM đang active.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# CẤU HÌNH MÔ HÌNH ENCODER (SGPT)
+# CHẠY CÁI GÌ
 # -----------------------------------------------------------------------------
-encoder:
-    # Tên model HuggingFace — tự động tải về lần đầu tiên. ĐÂY là thứ DUY NHẤT
-    # quyết định dùng SGPT cỡ nào, đổi model chỉ cần sửa đúng dòng này.
-    # Các lựa chọn theo thứ tự tăng dần về chất lượng/RAM:
-    #   "Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit"  (~500MB)
-    #   "Muennighoff/SGPT-1.3B-weightedmean-msmarco-specb-bitfit"  (~5GB)
-    #   "Muennighoff/SGPT-2.7B-weightedmean-msmarco-specb-bitfit"  (~11GB)
-    #   "Muennighoff/SGPT-5.8B-weightedmean-msmarco-specb-bitfit"  (~23GB)
-    # Nhãn thư mục outputs/ suy ra từ chính tên này (SGPT-125M-weightedmean-... →
-    # sgpt-125m-weightedmean-...), nên kết quả của hai model không ghi đè nhau và
-    # cũng không có biến nào phải sửa kèm.
-    model_name: Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit
-
-    # Số lượng văn bản xử lý song song — giảm nếu gặp lỗi hết RAM
-    batch_size: 256
+general:
+    # spider | bird | vitext2sql — encoder tự chọn theo khối `datasets` bên dưới.
+    dataset: spider
+    top_k: [3, 5, 10, 20]    # các mức k để tính recall trong score.json
 
 # -----------------------------------------------------------------------------
-# CẤU HÌNH LLM (dùng cho bước Rewrite và sinh SQL)
+# ENCODER — khai theo profile, mỗi dataset trỏ tới một profile
+#
+# `type` quyết định cách gộp token và cách phân biệt query/document:
+#   sgpt     : SPECB "[ ]" / "{ }" + weighted-mean pooling (đúng bản của paper)
+#   sentence : mean pooling + tiền tố văn bản (BERT/XLM-R, sentence-transformers)
+#
+# Nhãn thư mục outputs/ suy ra từ `model_name`, nên hai profile khác model thì kết
+# quả không ghi đè nhau.
+# -----------------------------------------------------------------------------
+encoders:
+
+    # Cho tiếng Anh (spider, bird) — đúng model của paper.
+    # Các cỡ khác, tăng dần chất lượng/RAM:
+    #   Muennighoff/SGPT-1.3B-weightedmean-msmarco-specb-bitfit  (~5GB)
+    #   Muennighoff/SGPT-2.7B-weightedmean-msmarco-specb-bitfit  (~11GB)
+    #   Muennighoff/SGPT-5.8B-weightedmean-msmarco-specb-bitfit  (~23GB)
+    sgpt:
+        type: sgpt
+        model_name: Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit
+
+        # TRẦN số văn bản mã hoá song song. Chỉ là trần: batch thật còn bị cắt theo
+        # max_batch_tokens, nên để 256 cũng không tràn bộ nhớ.
+        batch_size: 256
+
+        # Trần TOKEN cho một batch = số câu × độ dài câu dài nhất trong batch. ĐÂY
+        # mới là thứ chặn tràn bộ nhớ, vì bộ nhớ attention tăng theo bình phương độ
+        # dài chuỗi còn batch_size thì chỉ đếm số câu.
+        #
+        # Chuyện đã xảy ra thật: schema dài nhất của BIRD là 598 token, gộp chung
+        # batch 256 câu thì cả 256 phải pad tới 598 → RSS đỉnh 8.4 GB, và trên máy
+        # 16 GB thì torch nổ ACCESS_VIOLATION (0xC0000005) ngay trong code C. Với
+        # trần này RSS đỉnh còn 2.7 GB và mã hoá lại NHANH HƠN (bớt padding thừa).
+        #
+        # Giảm nếu máy ít RAM; tăng nếu có GPU rộng rãi và muốn nhanh hơn.
+        max_batch_tokens: 16384
+
+    # Cho tiếng Việt (vitext2sql). BẮT BUỘC là model đa ngữ.
+    #
+    # Đo trên chính corpus ViText2SQL (954 câu, 876 schema, chỉ hop 1):
+    #                          r@3    r@5   r@10   r@20
+    #   SGPT-125M              4.0    5.6   10.2   16.6   ← gần như ngẫu nhiên
+    #   multilingual-e5-base  73.4   82.2   90.7   94.6
+    #
+    # SGPT chỉ học tiếng Anh: BPE của nó băm mỗi schema tiếng Việt ra 82 token
+    # (bản tiếng Anh chỉ 24) nên vector gần như vô nghĩa.
+    #
+    # Cỡ khác: intfloat/multilingual-e5-small (~470MB), -large (~2.2GB).
+    multilingual:
+        type: sentence
+        model_name: intfloat/multilingual-e5-base
+        batch_size: 256
+        max_batch_tokens: 16384
+        max_length: 512
+        # Hai tiền tố này BẮT BUỘC với họ E5 — model được huấn luyện với đúng chúng,
+        # bỏ đi là điểm tụt hẳn. Model khác (bge-m3, ...) thì để trống.
+        query_prefix: "query: "
+        doc_prefix: "passage: "
+
+# -----------------------------------------------------------------------------
+# DATASET — mỗi cái tự khai encoder của nó
+#
+# Đường dẫn (tables/dev/prompt) theo quy ước nên không cần khai lại; muốn đặt khác
+# thì thêm `tables:`, `dev:`, `prompt:` vào khối tương ứng.
+# -----------------------------------------------------------------------------
+datasets:
+    spider:
+        encoder: sgpt
+    bird:
+        encoder: sgpt
+    # Dữ liệu không đi kèm repo — dựng bằng:
+    #   python scripts/prepare_vitext2sql.py
+    vitext2sql:
+        encoder: multilingual
+
+# -----------------------------------------------------------------------------
+# THAM SỐ PIPELINE (§4.1 của paper)
+# -----------------------------------------------------------------------------
+pipeline:
+    beam_size: 5        # B — số nhánh giữ lại, cũng là số bảng retrieve mỗi hop
+    max_hop: 3          # H — ĐẾM CẢ hop 1, nên H=3 nghĩa là 2 lượt Removal
+    top_k_output: 5     # số bảng mặc định lấy ra (/retrieve, /sql, cli ask)
+    question_retries: 3 # số lần thử lại MỘT câu khi LLM timeout / 429 / bận
+
+# -----------------------------------------------------------------------------
+# LLM (pha Removal và sinh SQL)
 # -----------------------------------------------------------------------------
 llm:
-    # Tên model. Ví dụ:
-    #   OpenAI:  gpt-3.5-turbo, gpt-4o-mini, gpt-4o
-    #   Groq:    llama-3.1-8b-instant
-    #   Ollama:  qwen2.5:7b, qwen2.5:14b, qwen2.5-coder:7b, llama3.2, ...
     active_profile: qwen2.5-coder-7b
-    # Khai báo sẵn nhiều "profile" LLM, mỗi profile là 1 model/endpoint riêng.
-    # Thêm profile mới bằng cách copy 1 khối dưới đây và đổi tên/model_name.
 
     profiles:
-
-        # Mỗi profile còn 3 khóa tùy chọn (mặc định trong src/config.py):
+        # Mỗi profile còn 3 khoá tuỳ chọn (mặc định trong src/config.py):
         #   connect_timeout: 3.0   giây chờ MỞ kết nối — Ollama chưa bật thì lỗi ngay
         #   timeout:         120.0 giây chờ MỘT lần sinh — model lớn cần tăng
         #   max_retries:     1     số lần thử lại khi request lỗi
-        qwen2.5-7b:
-            model_name: qwen2.5:7b
+        qwen2.5-coder-7b:
+            model_name: qwen2.5-coder:7b
             api_key: ""
             base_url: "http://localhost:11434/v1"
             temperature: 0.0
@@ -54,44 +132,46 @@ llm:
             base_url: "http://localhost:11434/v1"
             temperature: 0.0
 
-        qwen2.5-coder-7b:
-            model_name: qwen2.5-coder:7b
-            api_key: ""
-            base_url: "http://localhost:11434/v1"
-            temperature: 0.0
-
-        qwen2.5-0.5b:
-            model_name: qwen2.5:0.5b
-            api_key: ""
-            base_url: "http://localhost:11434/v1"
-            temperature: 0.0
-
-        smollm2-135m:
-            model_name: smollm2:135m
-            api_key: ""
-            base_url: "http://localhost:11434/v1"
-            temperature: 0.0
-
-        llama3.2-1b:
-            model_name: llama3.2:1b
-            api_key: ""
-            base_url: "http://localhost:11434/v1"
-            temperature: 0.0
-
-        llama3.2:
-            model_name: llama3.2:3b
-            api_key: ""
-            base_url: "http://localhost:11434/v1"
-            temperature: 0.0
-
-        openai-gpt-3.5-turbo:
-            model_name: gpt-3.5-turbo    # Model dùng trong paper gốc (§4.1)
+        openai-gpt-4o-mini:
+            model_name: gpt-4o-mini
             api_key: ""                   # để trống, điền qua .env: OPENAI_API_KEY
-            base_url: ""                  # để trống → dùng endpoint OpenAI mặc định
+            base_url: ""                  # để trống → endpoint OpenAI mặc định
             temperature: 0.0
 
         groq-llama-3.1-8b:
             model_name: llama-3.1-8b-instant
-            api_key: ""                   # điền qua .env: OPENAI_API_KEY (dùng key của Groq)
+            api_key: ""                   # điền qua .env: OPENAI_API_KEY (key của Groq)
             base_url: "https://api.groq.com/openai/v1"
             temperature: 0.0
+
+# -----------------------------------------------------------------------------
+# API SERVICE
+# -----------------------------------------------------------------------------
+api:
+    host: 0.0.0.0
+    port: 8000
+
+    # Dataset service phục vụ. Rỗng = mọi dataset có tables.json trên đĩa.
+    # Mỗi dataset nạp encoder của nó, nên khai càng nhiều thì khởi động càng lâu và
+    # càng tốn RAM (SGPT ~500MB + multilingual-e5-base ~1.1GB).
+    datasets: [spider, bird, vitext2sql]
+
+    # true  → nạp encoder/LLM/embeddings và ping LLM TRƯỚC khi nhận request; thiếu
+    #         gì thì startup hỏng luôn. Lên chậm, đổi lại /retrieve chắc chắn chạy.
+    # false → nạp lười ở request đầu tiên; lên nhanh nhưng KHÔNG bảo đảm gì.
+    preload: true
+
+    # Origin được phép gọi từ trình duyệt. Rỗng = không bật CORS.
+    cors_origins: []
+
+    # true → response 500 kèm traceback. CHỈ bật khi debug.
+    debug_errors: false
+
+# -----------------------------------------------------------------------------
+# LOG
+# -----------------------------------------------------------------------------
+logging:
+    level: INFO          # DEBUG | INFO | WARNING | ERROR
+    log_to_file: true    # vẫn in ra console, chỉ là ghi thêm ra file
+    log_dir: outputs/logs
+    log_file: murre.log

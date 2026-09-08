@@ -7,35 +7,31 @@ from __future__ import annotations
 
 from typing import Optional
 
-from enums import Dataset, JobStatus, Method
+from enums import Dataset, JobStatus
 from pydantic import BaseModel, ConfigDict, Field
 
 from schemas.evaluate import EvalResult
 
 
 class PipelineRunRequest(BaseModel):
-    """Body của POST /pipeline/run — 3 tham số chính + limit để chạy thử nhanh.
+    """Body của POST /pipeline/run.
 
     KHÔNG có `model`: encoder do server quyết định, lấy từ encoder.model_name trong
     config.yaml. Lý do: model phải khớp với cache embeddings đã có sẵn trên máy chủ,
     để client tự chọn thì dễ sinh ra lần chạy phải tải model mới (SGPT-5.8B ~23GB).
-    Nhãn model thực tế vẫn được báo lại trong PipelineJob.model.
     """
 
-    # extra="forbid": client cũ còn gửi "model" sẽ nhận 422 kèm tên field sai, thay
-    # vì bị bỏ qua âm thầm rồi tưởng server đã chạy đúng model mình chọn.
+    # extra="forbid": client cũ còn gửi "method"/"model" sẽ nhận 422 kèm tên field
+    # sai, thay vì bị bỏ qua âm thầm rồi tưởng server đã chạy đúng thứ mình chọn.
     model_config = ConfigDict(extra="forbid")
 
-    dataset: Dataset = Field(default=Dataset.SPIDER, description="spider | bird")
-    method: Method = Field(
-        default=Method.MURRE, description="murre | single_hop | crush"
-    )
+    dataset: Dataset = Field(default=Dataset.SPIDER, description="spider | bird | vitext2sql")
     k: int = Field(default=5, ge=1, description="k dùng để báo recall@k sau khi chạy xong")
     limit: Optional[int] = Field(
         default=None,
         ge=1,
         description="Chỉ chạy N câu đầu của dev.json (bỏ trống = chạy hết). "
-                    "Murre gọi LLM mỗi hop mỗi beam nên chạy đủ 658 câu rất lâu — "
+                    "MURRE gọi LLM mỗi hop mỗi beam nên chạy đủ dev.json rất lâu — "
                     "để thử nhanh hãy đặt limit=20.",
     )
 
@@ -50,7 +46,6 @@ class PipelineJob(BaseModel):
     job_id: str = Field(..., description="Dùng để poll GET /pipeline/jobs/{job_id}")
     status: JobStatus = Field(..., description="queued | running | succeeded | failed")
     dataset: Dataset = Field(..., description="Dataset của lần chạy")
-    method: Method = Field(..., description="Method của lần chạy")
     k: int = Field(..., description="k dùng để báo metric")
     limit: Optional[int] = Field(default=None, description="Số câu giới hạn, None = chạy hết")
     processed: int = Field(default=0, description="Số câu đã xử lý")

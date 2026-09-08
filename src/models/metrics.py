@@ -1,7 +1,7 @@
 """models/metrics.py — Định dạng điểm số của một lần chạy (file score.json).
 
     utils/metrics.py::compute_res  ──tính──>  MetricScores
-    methods/runner.py              ──ghi───>  score.json
+    pipeline/runner.py             ──ghi───>  score.json
     api/evaluator.py               ──đọc───>  recall_at(k) / complete_recall_at(k)
 
 QUY TẮC KHI SỬA: tên field CHÍNH LÀ khóa ghi ra score.json (xem to_dict).

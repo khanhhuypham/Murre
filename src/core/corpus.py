@@ -1,18 +1,18 @@
-"""core/corpus.py — Nạp corpus schema + embeddings (có cache), dùng chung cho mọi
-method và mọi entry point.
+"""core/corpus.py — Nạp corpus schema + embeddings (có cache).
 
-Gom lại một chỗ vì logic "đọc tables.json → build corpus → nạp/encode embeddings →
-lưu cache" trước đây bị lặp ở api/ và các script test.
+Một chỗ duy nhất cho chuỗi "đọc tables.json → build corpus → nạp/encode embeddings
+→ lưu cache", dùng chung cho cả CLI và API.
 """
 from __future__ import annotations
 
+import hashlib
 import os
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import torch
 
 from config import cfg
-from core.encoder import SGPTEncoder
+from core.encoder import Encoder
 from dataset.loader import load_tables
 from utils import logger
 from utils.schema import build_schema_corpus
@@ -27,8 +27,24 @@ def build_corpus(dataset: Optional[str] = None) -> List[str]:
     return build_schema_corpus(tables=load_tables(dataset=dataset))
 
 
+def corpus_fingerprint(corpus: List[str], model_name: str) -> str:
+    """Vân tay của (nội dung corpus, model) — quyết định một cache có dùng lại được.
+
+    Đếm số vector thôi thì KHÔNG đủ: hai corpus khác hẳn nhau vẫn có thể cùng số
+    schema. ViText2SQL mức syllable và mức word là đúng ca đó — cùng 876 bảng, chỉ
+    khác cách viết tên ("kiến trúc sư" / "kiến_trúc_sư") — nên chuyển mức rồi chạy
+    lại sẽ dùng lại vector của mức cũ và chấm điểm sai mà không báo gì.
+    """
+    h = hashlib.sha256()
+    h.update(model_name.encode("utf-8"))
+    for schema in corpus:
+        h.update(b"\0")
+        h.update(schema.encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
 def load_embeddings(
-    encoder: SGPTEncoder,
+    encoder: Encoder,
     corpus: List[str],
     dataset: Optional[str] = None,
 ) -> torch.Tensor:
@@ -36,34 +52,28 @@ def load_embeddings(
 
     Cache nằm ở paths.embeddings_cache — có cả {dataset} và {model} trong tên, nên
     đổi encoder.model_name sẽ dùng file cache khác chứ không nạp nhầm vector cũ.
+    Nội dung corpus đổi mà tên file không đổi thì vân tay bên trong bắt được.
     """
     cache_path: str = cfg.outputs.for_run(dataset=dataset).embeddings_cache()
+    fingerprint: str = corpus_fingerprint(corpus=corpus, model_name=encoder.model_name)
 
     if os.path.exists(cache_path):
-        logger.info(f"[Corpus] Nạp embeddings từ cache: {cache_path}")
-        cached: torch.Tensor = torch.load(cache_path, weights_only=True)
-        # Cache cũ của model/corpus khác vẫn nạp được nhưng số vector sẽ lệch với số
-        # schema → điểm số gán nhầm bảng. Bắt tại đây thay vì chấm điểm sai âm thầm.
-        if cached.shape[0] != len(corpus):
-            raise RuntimeError(
-                f"Cache embeddings không khớp corpus: {cached.shape[0]} vector "
-                f"cho {len(corpus)} schema.\n"
-                f"  Cache: {cache_path}\n"
-                f"  Cách xử lý: xoá file cache đó rồi chạy lại để encode lại."
-            )
-        return cached
+        cached: Any = torch.load(cache_path, weights_only=True)
+        if isinstance(cached, dict) and cached.get("fingerprint") == fingerprint:
+            logger.info(f"[Corpus] Nạp embeddings từ cache: {cache_path}")
+            return cached["embeddings"]
 
-    logger.info(f"[Corpus] Chưa có cache, đang encode {len(corpus)} schemas ...")
+        # Cache của corpus/model KHÁC. Encode lại và ghi đè — nó chỉ là cache, dựng
+        # lại được, nên không bắt người dùng phải đi xoá tay.
+        logger.warning(
+            f"[Corpus] Cache {cache_path} thuộc corpus/model khác → encode lại."
+        )
+
+    logger.info(f"[Corpus] Đang encode {len(corpus)} schemas ...")
     embs: torch.Tensor = encoder.encode(texts=corpus, is_query=False)
+
+    payload: Dict[str, Any] = {"fingerprint": fingerprint, "embeddings": embs}
     os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
-    torch.save(obj=embs, f=cache_path)
+    torch.save(obj=payload, f=cache_path)
     logger.info(f"[Corpus] Đã lưu cache → {cache_path}")
     return embs
-
-
-def prepare(dataset: Optional[str] = None) -> Tuple[SGPTEncoder, List[str], torch.Tensor]:
-    """Chuẩn bị đủ 3 thứ mà mọi retriever.run() cần: encoder, corpus, embeddings."""
-    corpus: List[str] = build_corpus(dataset=dataset)
-    encoder: SGPTEncoder = SGPTEncoder()
-    embs: torch.Tensor = load_embeddings(encoder=encoder, corpus=corpus, dataset=dataset)
-    return encoder, corpus, embs

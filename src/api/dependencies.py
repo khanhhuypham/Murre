@@ -9,30 +9,36 @@ from typing import List
 from starlette.datastructures import State
 
 from config import cfg
-from core.encoder import SGPTEncoder
+from core.encoder import build_encoder
 from core.llm import LLMGenerator
-from enums import Dataset, Method
-from methods.build import LoadedDataset, build_dataset
+from enums import Dataset
+from models.errors import AppError
+from pipeline.factory import LoadedDataset, build_dataset
 from utils import logger
 
 
 def _build_for_state(state: State, ds_name: Dataset) -> LoadedDataset:
-    """Ráp 1 dataset bằng encoder/LLM của server — phần ráp ở methods/build.py.
+    """Ráp 1 dataset bằng encoder/LLM của server — phần ráp ở pipeline/factory.py.
 
     Việc riêng của server là VÒNG ĐỜI: encoder/LLM tạo một lần rồi giữ trong
     app.state cho MỌI dataset dùng chung, nên phải tạo ở đây rồi truyền xuống.
     """
-    method: Method = Method(cfg.pipeline.method)
-
-    if state.encoder is None:
-        state.encoder = SGPTEncoder()
-    if method.needs_llm and state.llm is None:
+    # Encoder gắn với DATASET, nhưng nhiều dataset dùng chung một profile
+    # (spider và bird cùng `sgpt`) — cache theo tên profile để model chỉ nạp một
+    # lần, thay vì mỗi dataset một bản trong RAM.
+    profile_name: str = cfg.dataset_config(ds_name).encoder
+    if profile_name not in state.encoders:
+        state.encoders[profile_name] = build_encoder(dataset=ds_name)
+    if state.llm is None:
         state.llm = LLMGenerator()
 
     loaded: LoadedDataset = build_dataset(
-        method=method, dataset=ds_name, encoder=state.encoder, llm=state.llm,
+        dataset=ds_name, encoder=state.encoders[profile_name], llm=state.llm,
     )
-    logger.info(f"[API] Đã nạp dataset '{ds_name}' ({len(loaded.corpus)} schemas)")
+    logger.info(
+        f"[API] Đã nạp dataset '{ds_name}' ({len(loaded.corpus)} schemas, "
+        f"encoder '{profile_name}')"
+    )
     return loaded
 
 
@@ -47,9 +53,58 @@ async def load_dataset_once(state: State, ds_name: Dataset) -> LoadedDataset:
     return state.datasets[ds_name]
 
 
+def configured_datasets() -> List[Dataset]:
+    """Dataset mà service này được phép phục vụ (api.datasets); rỗng = tất cả."""
+    names: List[str] = cfg.api.datasets
+    if not names:
+        return list(Dataset)
+
+    # Dataset(n) NÉM ValueError khi tra hụt (Enum xử lý _missing_ trả None như vậy),
+    # nên phải bắt chứ không kiểm tra `is None` được.
+    out: List[Dataset] = []
+    unknown: List[str] = []
+    for name in names:
+        try:
+            out.append(Dataset(name))
+        except ValueError:
+            unknown.append(name)
+
+    if unknown:
+        raise ValueError(
+            f"api.datasets có giá trị không hợp lệ: {unknown}. Chỉ nhận: {Dataset.values()}"
+        )
+    return out
+
+
 def available_datasets() -> List[Dataset]:
-    """Dataset có sẵn tables.json trên đĩa (chưa chắc đã nạp vào RAM)."""
-    return [d for d in Dataset if os.path.exists(f"dataset/{d}/tables.json")]
+    """Dataset service phục vụ VÀ đã có tables.json trên đĩa (chưa chắc đã nạp RAM)."""
+    return [d for d in configured_datasets() if os.path.exists(cfg.dataset_config(d).tables)]
+
+
+def require_dataset(ds_name: Dataset) -> None:
+    """Chặn sớm request hỏi dataset mà service này không phục vụ.
+
+    Phân biệt hai lý do: KHÔNG KHAI trong api.datasets, hay khai rồi nhưng THIẾU
+    FILE. Gộp làm một thì người vận hành đi tìm file đang nằm sẵn trên đĩa.
+    """
+    available: List[Dataset] = available_datasets()
+    if ds_name in available:
+        return
+
+    have: str = ", ".join(str(d) for d in available) or "không có dataset nào"
+    if ds_name not in configured_datasets():
+        raise AppError.not_found(
+            message=(
+                f"Service này không phục vụ dataset '{ds_name}' (api.datasets trong "
+                f"config.yaml). Đang phục vụ: {have}."
+            )
+        )
+    raise AppError.not_found(
+        message=(
+            f"Dataset '{ds_name}' có khai trong api.datasets nhưng thiếu file "
+            f"{cfg.dataset_config(ds_name).tables}. Đang phục vụ: {have}."
+        )
+    )
 
 
 def datasets_to_preload() -> List[Dataset]:
@@ -61,7 +116,7 @@ def datasets_to_preload() -> List[Dataset]:
     if not available:
         raise RuntimeError(
             "api.preload=true nhưng không có dataset nào để nạp: thiếu cả "
-            f"{', '.join(f'dataset/{d}/tables.json' for d in Dataset.values())}."
+            f"{', '.join(cfg.dataset_config(d).tables for d in configured_datasets())}."
         )
     return available
 
@@ -86,4 +141,5 @@ async def warmup_datasets(state: State) -> None:
         if state.llm is not None:
             await asyncio.to_thread(verify_llm, state.llm)
 
+    state.ready = True
     logger.info(f"[API] Sẵn sàng. Dataset đã nạp: {[str(d) for d in state.datasets]}")

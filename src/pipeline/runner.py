@@ -1,11 +1,8 @@
-"""methods/runner.py — NƠI DUY NHẤT viết cách chạy pipeline.
+"""pipeline/runner.py — NƠI DUY NHẤT viết cách chạy pipeline.
 
-    run_one_question()  Option 1 — MỘT câu hỏi, in ra terminal, không ghi file.
-    run_pipeline()      Option 2 — cả dev.json, ghi result + score. POST /pipeline
-                        và run_batch() đều gọi hàm này.
-    run_batch()         Option 2 — run_pipeline() + sinh SQL (murre).
-
-Cả 3 method dùng chung một đường, bộ retrieval ráp qua methods/build.py.
+    run_one_question()  MỘT câu hỏi, in ra terminal, không ghi file.
+    run_pipeline()      cả dev.json, ghi result + score. POST /pipeline/run và
+                        `python -m cli run` đều gọi hàm này.
 
 `cfg` là biến toàn cục của process nên mỗi lúc chỉ cho phép MỘT lần chạy
 (_RUN_LOCK); trong lúc chạy, /retrieve cũng thấy cfg đã bị ghi đè.
@@ -21,12 +18,12 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from config import cfg
 from dataset.loader import load_dev, resolve_question
-from enums import Dataset, Method
-from methods.build import LoadedDataset, build_dataset
+from enums import Dataset
 from models.errors import AppError
 from models.metrics import MetricScores
 from models.records import ResultRecord
 from models.retrieval import RetrievedTable
+from pipeline.factory import LoadedDataset, build_dataset
 from utils import logger
 from utils.display import print_results
 from utils.metrics import compute_res
@@ -38,75 +35,57 @@ ProgressFn = Callable[[int, int], None]
 
 
 @contextmanager
-def override_cfg(
-    dataset: Optional[Dataset] = None,
-    method: Optional[Method] = None,
-) -> Iterator[None]:
-    """Tạm ghi đè cfg cho một lần chạy rồi trả lại nguyên trạng. None = giữ nguyên.
+def override_dataset(dataset: Optional[Dataset] = None) -> Iterator[None]:
+    """Tạm ghi đè general.dataset cho một lần chạy rồi trả lại nguyên trạng.
 
-    Chỉ đụng general.dataset và pipeline.method — đó là hai giá trị mà nhiều chỗ
-    đọc NGẦM (template đường dẫn trong PathsConfig, build_retriever()).
+    general.dataset được đọc NGẦM ở nhiều chỗ (template đường dẫn trong PathsConfig,
+    dataset/loader.py), nên chạy dataset khác mặc định phải đi qua đây.
     """
-    saved: Dict[str, Any] = {
-        "dataset": cfg.general.dataset,
-        "method": cfg.pipeline.method,
-    }
+    if dataset is None:
+        yield
+        return
 
-    changed: List[str] = []
-    if dataset is not None:
-        cfg.general.dataset = dataset.value
-        changed.append(f"dataset={dataset}")
-    if method is not None:
-        cfg.pipeline.method = method.value
-        changed.append(f"method={method}")
-
-    if changed:
-        logger.info(f"[Runner] cfg tạm: {' '.join(changed)}")
+    saved: str = cfg.general.dataset
+    cfg.general.dataset = dataset.value
+    logger.info(f"[Runner] cfg tạm: dataset={dataset}")
     try:
         yield
     finally:
-        cfg.general.dataset = saved["dataset"]
-        cfg.pipeline.method = saved["method"]
-        if changed:
-            logger.info("[Runner] Đã trả cfg về nguyên trạng.")
+        cfg.general.dataset = saved
+        logger.info("[Runner] Đã trả cfg về nguyên trạng.")
 
 
 # ---------------------------------------------------------------------------
-# Option 1 — one_question
+# Một câu hỏi
 # ---------------------------------------------------------------------------
 def run_one_question(
-    method: Method,
     question: Optional[str] = None,
-    top_n: int = 5,
+    top_k: int = 5,
     verbose: bool = False,
     llm_profile: Optional[str] = None,
-    crush_collective: bool = True,
 ) -> List[RetrievedTable]:
-    """Chạy MỘT câu hỏi rồi in top-N bảng ra terminal, không ghi file.
+    """Chạy MỘT câu hỏi rồi in top-K bảng ra terminal, không ghi file.
 
-        question         : None → câu đầu tiên trong dev.json
-        verbose          : in chi tiết từng hop (murre) / bảng LLM đoán (crush)
-        llm_profile      : None → dùng llm.active_profile
-        crush_collective : chỉ có tác dụng với Method.CRUSH
+        question    : None → câu đầu tiên trong dev.json
+        top_k       : số bảng in ra
+        verbose     : in chi tiết từng hop
+        llm_profile : None → dùng llm.active_profile
     """
     q: str = resolve_question(question=question)
 
-    loaded: LoadedDataset = build_dataset(
-        method=method, llm_profile=llm_profile, crush_collective=crush_collective,
-    )
+    loaded: LoadedDataset = build_dataset(llm_profile=llm_profile)
     results: List[RetrievedTable] = loaded.retriever.run(
         question=q, corpus=loaded.corpus, schema_embeddings=loaded.embs, verbose=verbose,
     )
 
-    print_results(method=str(method), question=q, results=results, top_n=top_n)
+    print_results(question=q, results=results, top_k=top_k)
     return results
 
 
 # ---------------------------------------------------------------------------
-# Option 2 — batch
+# Cả dev.json
 # ---------------------------------------------------------------------------
 def run_pipeline(
-    method: Method,
     dataset: Optional[Dataset] = None,
     limit: Optional[int] = None,
     on_progress: Optional[ProgressFn] = None,
@@ -123,29 +102,25 @@ def run_pipeline(
     if not _RUN_LOCK.acquire(blocking=False):
         raise AppError.pipeline_busy()
     try:
-        with override_cfg(dataset=dataset, method=method):
-            return _run_locked(method=method, limit=limit, on_progress=on_progress)
+        with override_dataset(dataset=dataset):
+            return _run_locked(limit=limit, on_progress=on_progress)
     finally:
         _RUN_LOCK.release()
 
 
-def _run_fingerprint(method: Method) -> Dict[str, Any]:
+def _run_fingerprint() -> Dict[str, Any]:
     """Các tham số mà đổi đi thì kết quả đã lưu trong checkpoint không dùng lại được.
 
-    Đường dẫn checkpoint đã có dataset/model/method/max_hop, nhưng beam_size, pool
-    hay ablation thì không nằm trong tên file — đổi chúng mà vẫn nối tiếp checkpoint
-    cũ là trộn hai cấu hình vào một bảng điểm.
+    Đường dẫn checkpoint đã có dataset/model/max_hop, nhưng beam_size hay LLM thì
+    không nằm trong tên file — đổi chúng mà vẫn nối tiếp checkpoint cũ là trộn hai
+    cấu hình vào một bảng điểm.
     """
-    ab = cfg.pipeline.ablation
     return {
         "dataset": cfg.general.dataset,
-        "method": method.value,
-        "encoder": cfg.encoder.model_name,
+        "encoder": cfg.encoder_for().model_name,
         "llm_profile": cfg.llm.active_profile,
         "beam_size": cfg.pipeline.beam_size,
         "max_hop": cfg.pipeline.max_hop,
-        "top_k_pool": cfg.pipeline.top_k_pool,
-        "ablation": [ab.removal, ab.tabulation],
     }
 
 
@@ -191,9 +166,8 @@ def _load_checkpoint(path: str, fingerprint: Dict[str, Any]) -> Dict[int, Result
 
 
 def _run_locked(
-    method: Method,
     limit: Optional[int],
-    on_progress: Optional[ProgressFn]
+    on_progress: Optional[ProgressFn],
 ) -> Dict[str, Any]:
     """Thân của run_pipeline — đã giữ lock và đã ghi đè cfg."""
     dev: List[Dict[str, Any]] = load_dev()
@@ -201,25 +175,30 @@ def _run_locked(
         dev = dev[:limit]
     total: int = len(dev)
     if total == 0:
-        raise ValueError("dev.json rỗng — không có câu hỏi nào để chạy.")
+        raise AppError.bad_request(message="dev.json rỗng — không có câu hỏi nào để chạy.")
 
     # Checkpoint đọc TRƯỚC khi dựng dataset: chạy lại một lượt đã xong thì không phải
     # nạp encoder/LLM làm gì.
     ckpt_file: str = cfg.outputs.checkpoint()
-    fingerprint: Dict[str, Any] = _run_fingerprint(method=method)
+    fingerprint: Dict[str, Any] = _run_fingerprint()
     done: Dict[int, ResultRecord] = _load_checkpoint(path=ckpt_file, fingerprint=fingerprint)
     todo: List[int] = [i for i in range(total) if i not in done]
 
-    loaded: LoadedDataset = build_dataset(method=method)
+    # Báo tiến độ NGAY, trước khi nạp model: chạy lại một lượt đã xong thì vòng lặp
+    # dưới không quay lần nào và job sẽ báo 0/0 dù thực ra đã đủ.
+    if on_progress is not None:
+        on_progress(len(done), total)
+
+    loaded: LoadedDataset = build_dataset()
 
     logger.info(
-        f"[Runner] Bắt đầu {method} trên {total} câu ({len(todo)} câu còn phải chạy), "
+        f"[Runner] Bắt đầu trên {total} câu ({len(todo)} câu còn phải chạy), "
         f"corpus {len(loaded.corpus)} schemas."
     )
 
     os.makedirs(os.path.dirname(ckpt_file) or ".", exist_ok=True)
     is_new: bool = not os.path.exists(ckpt_file)
-    retries: int = max(1, cfg.pipeline.question_retries)
+    retries: int = cfg.pipeline.question_retries
 
     with open(ckpt_file, "a", encoding="utf-8") as ckpt:
         if is_new:
@@ -297,31 +276,3 @@ def _run_locked(
         "retrieved_depth": depth,
         "metrics": metrics,
     }
-
-
-def run_batch(
-    method: Method,
-    top_k: int = 5,
-    force_embed: bool = False,
-    limit: Optional[int] = None,
-) -> None:
-    """Chạy cả dev.json cho MỘT method, rồi sinh SQL nếu là murre.
-        top_k       : số bảng đưa vào bước sinh SQL (chỉ dùng với murre).
-        force_embed : xoá cache embeddings để encode lại corpus.
-        limit       : chỉ chạy N câu đầu (None = cả dev.json).
-    """
-    if force_embed:
-        cache_file: str = cfg.outputs.embeddings_cache()
-        if os.path.exists(cache_file):
-            os.remove(cache_file)
-            logger.info(f"[Runner] force_embed → đã xoá {cache_file}, sẽ encode lại.")
-
-    logger.info(f"[Runner] Batch {method} — chạy qua run_pipeline()")
-
-    run_pipeline(method=method, limit=limit)
-
-    # Bước cuối của paper: top-K bảng → SQL, đọc lại chính file result vừa ghi.
-    # Import trong thân hàm cho đồng bộ với methods/murre.py::build_sql.
-    if method is Method.MURRE:
-        from steps.infer import run_infer
-        run_infer(top_k=top_k)

@@ -1,8 +1,8 @@
 # =============================================================================
 # core/rewriter.py — pha Removal của MURRE (§3.4)
 #
-# Khác CRUSH ở chỗ: thay vì THÊM bảng đã tìm được vào câu hỏi, MURRE bắt LLM nói ra
-# BẢNG CÒN THIẾU dựa trên bảng đã có, rồi lấy chuỗi đó đi retrieve hop kế.
+# LLM được yêu cầu nói ra BẢNG CÒN THIẾU dựa trên câu hỏi gốc và các bảng đã tìm
+# được, rồi lấy chuỗi đó đi retrieve hop kế.
 #
 #   Câu hỏi: "Which airlines fly to AHD?"
 #   Đã có:   flight_2.flights(airline, source, destination)
@@ -10,8 +10,9 @@
 #
 # LLM trả "None" → đã đủ bảng, nhánh đó dừng sớm (Early Stop).
 # =============================================================================
+from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from config import cfg
 from core.llm import LLMGenerator
@@ -21,7 +22,7 @@ from utils import logger
 class QueryRewriter:
     """Pha Removal: (câu hỏi gốc + bảng đã có) → bảng còn thiếu, hoặc mẫu Early Stop.
 
-    Bốn hằng số dưới đây là tham số của pha Removal. Kế thừa class rồi ghi đè chúng
+    Ba hằng số dưới đây là tham số của pha Removal. Kế thừa class rồi ghi đè chúng
     là đổi được hành vi, không phải sửa thân hàm.
     """
 
@@ -41,18 +42,21 @@ class QueryRewriter:
     # stop này thì model sinh tiếp khối "Question:" kế rồi tự bịa và tự trả lời thêm.
     _STOP_SEQUENCES: List[str] = ["\n\n"]
 
+    _MAX_TOKENS: int = 256
 
-    def __init__(self, llm: LLMGenerator) -> None:
+    def __init__(self, llm: LLMGenerator, dataset: Optional[str] = None) -> None:
+        """dataset=None → prompt của general.dataset đang chọn.
+
+        Truyền tường minh khi phục vụ nhiều dataset trong một process (API): prompt
+        phải khớp dataset của corpus, không phải dataset mặc định của config.
+        """
         self.llm: LLMGenerator = llm
-        self.use_tabulation: bool = cfg.pipeline.ablation.tabulation
 
-        ds_paths = cfg.dataset_paths
-        prompt_path: str = ds_paths.prompt if self.use_tabulation else ds_paths.prompt_no_tabulation
+        prompt_path: str = cfg.dataset_config(dataset).prompt
         with open(prompt_path, "r", encoding="utf-8") as f:
             self.prompt_template: str = "\n".join(line.rstrip("\n") for line in f)
 
-        mode_desc: str = "Tabulation" if self.use_tabulation else "w/o Tabulation (natural language)"
-        logger.info(f"[QueryRewriter] Đã tải prompt ({mode_desc}) từ: {prompt_path}")
+        logger.info(f"[QueryRewriter] Đã tải prompt Removal từ: {prompt_path}")
 
     def rewrite(self, question: str, retrieved_schemas: List[str]) -> str:
         """Gọi LLM dự đoán bảng còn thiếu (Completing Tables) — §3.4.
@@ -73,7 +77,7 @@ class QueryRewriter:
         raw_output: str = self.llm.generate(
             prompt=prompt,
             stop=self._STOP_SEQUENCES,
-            max_tokens=256,
+            max_tokens=self._MAX_TOKENS,
         )
         return self._strip_echo(text=raw_output)
 

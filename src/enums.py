@@ -1,15 +1,16 @@
 """enums.py — Các tập giá trị hợp lệ của project, dùng thay cho chuỗi trần.
 
 Cách dùng:
-    from enums import Dataset, Method
+    from enums import Dataset
 
     Dataset("spider")        → Dataset.SPIDER
     Dataset("SPIDER")        → Dataset.SPIDER      (không phân biệt hoa/thường)
     Dataset("mysql")         → ValueError
 
 Encoder KHÔNG có enum ở đây, và cũng không có danh sách hợp lệ ở đâu cả: model
-khai bằng `encoder.model_name` trong config.yaml (chuỗi tự do, tên HuggingFace),
-còn nhãn thư mục outputs/ thì suy ra từ nó qua `cfg.encoder.slug`.
+khai trong khối `encoders` của config.yaml (chuỗi tự do, tên HuggingFace) và mỗi
+dataset trỏ tới một profile ở đó; nhãn thư mục outputs/ suy ra từ chính tên model
+qua `cfg.encoder_for(<dataset>).slug`.
 
 Vì kế thừa `str`, mọi member vẫn dùng được như chuỗi (`f"dataset/{ds}/..."`,
 so sánh với `"spider"`, FastAPI/Pydantic serialize ra đúng giá trị JSON), nên
@@ -25,7 +26,7 @@ class BaseStrEnum(str, Enum):
     """Enum chuỗi khoan dung khi parse: bỏ khoảng trắng, không phân biệt hoa/thường.
 
     `_missing_` được Enum gọi khi tra cứu theo giá trị thất bại — nhờ vậy
-    `Method(" MURRE ")` vẫn ra `Method.MURRE` thay vì nổ ValueError.
+    `Dataset(" SPIDER ")` vẫn ra `Dataset.SPIDER` thay vì nổ ValueError.
     """
 
     @classmethod
@@ -49,22 +50,14 @@ class BaseStrEnum(str, Enum):
 
 
 class Dataset(BaseStrEnum):
-    """Dataset text-to-SQL được hỗ trợ (khớp `general.dataset` trong src/config.py)."""
+    """Dataset text-to-SQL được hỗ trợ (khớp `general.dataset` trong config.yaml).
+
+    vitext2sql là tiếng Việt (ViText2SQL của VinAI) — dữ liệu không đi kèm repo,
+    dựng bằng `python scripts/prepare_vitext2sql.py`.
+    """
     SPIDER = "spider"
     BIRD = "bird"
-
-
-class Method(BaseStrEnum):
-    """Phương pháp retrieval (khớp `pipeline.method` trong src/config.py)."""
-
-    MURRE = "murre"
-    SINGLE_HOP = "single_hop"
-    CRUSH = "crush"
-
-    @property
-    def needs_llm(self) -> bool:
-        """MURRE cần LLM cho pha Removal, CRUSH cần để hallucinate schema."""
-        return self in (Method.MURRE, Method.CRUSH)
+    VITEXT2SQL = "vitext2sql"
 
 
 class JobStatus(BaseStrEnum):

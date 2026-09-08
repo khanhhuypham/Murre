@@ -1,9 +1,7 @@
 """schemas/evaluate.py — Response model cho endpoint /evaluate."""
 from __future__ import annotations
 
-from typing import Any, Dict, List
-
-from enums import Dataset, Method
+from enums import Dataset
 from pydantic import BaseModel, Field
 
 
@@ -12,11 +10,10 @@ class EvalResult(BaseModel):
 
     KHÔNG có `model`: encoder do server quyết định (encoder.model_name trong
     config.yaml), client không chọn. Muốn biết model nào thì đọc `result_file` —
-    đường dẫn có sẵn nhãn model: outputs/{dataset}/{model}/{method}/...
+    đường dẫn có sẵn nhãn model: outputs/{dataset}/{model}/...
     """
 
-    dataset: Dataset = Field(..., description="spider | bird")
-    method: Method = Field(..., description="murre | single_hop | crush")
+    dataset: Dataset = Field(..., description="spider | bird | vitext2sql")
     k: int = Field(..., description="Số bảng top-đầu dùng để tính metric")
     recall: float = Field(..., description="recall@k (%) — tỉ lệ bảng gold tìm được trong top-k")
     complete_recall: float = Field(
@@ -24,23 +21,21 @@ class EvalResult(BaseModel):
     )
     num_questions: int = Field(
         ..., description="Số câu hỏi thực sự có trong file kết quả — phải là 658 (Spider dev) "
-                         "mới so được với paper; 20 nghĩa là lần chạy đó dùng --limit"
+                         "mới so được với paper; ít hơn nghĩa là lần chạy đó dùng limit"
     )
     retrieved_depth: int = Field(..., description="Số bảng đã lưu cho mỗi câu (giới hạn trên của k)")
     result_file: str = Field(..., description="File kết quả đã dùng để tính")
 
 
 class AvailableRun(BaseModel):
-    """Một tổ hợp (dataset, method) đã có kết quả trên đĩa.
+    """Một dataset đã có kết quả trên đĩa.
 
     KHÔNG có `model`: endpoint chỉ quét nhãn encoder hiện tại của server (suy ra từ
-    encoder.model_name), giống /pipeline/run — nên mỗi (dataset, method) chỉ ra đúng
-    một dòng. Muốn biết model nào thì nhìn `result_file`, đường dẫn có sẵn trong đó:
-    outputs/{dataset}/{model}/{method}/...
+    encoder.model_name), giống /pipeline/run. Muốn biết model nào thì nhìn
+    `result_file`, đường dẫn có sẵn trong đó: outputs/{dataset}/{model}/...
     """
 
-    dataset: Dataset = Field(..., description="spider | bird")
-    method: Method = Field(..., description="murre | single_hop | crush")
+    dataset: Dataset = Field(..., description="spider | bird | vitext2sql")
     num_questions: int = Field(..., description="Số câu hỏi trong file kết quả")
     retrieved_depth: int = Field(..., description="Số bảng đã lưu cho mỗi câu")
     result_file: str = Field(..., description="Đường dẫn file kết quả")

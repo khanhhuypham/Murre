@@ -3,17 +3,15 @@
 #
 # Hai kiểu ở đây trông giống nhau nhưng KHÁC vai trò, đừng nhầm:
 #
-#   RetrievedTable : kết quả TRONG BỘ NHỚ mà methods/*.run() trả về  → (schema, score)
-#   RetrievedRow   : một dòng trong mảng "retrieved" của FILE JSON   → (rank, schema, similarity)
+#   RetrievedTable : kết quả TRONG BỘ NHỚ mà MurreRetriever.run() trả về → (schema, score)
+#   RetrievedRow   : một dòng trong mảng "retrieved" của FILE JSON      → (rank, schema, similarity)
 #
-# Trước đây cả hai đều là dict trần (`List[Dict[str, Any]]`), nên chỗ nối giữa hai
-# thế giới phải đổi tên khóa bằng tay — methods/runner.py từng có nguyên một comment
-# giải thích vì sao "score" phải viết ra thành "similarity". Nay việc đó nằm gọn
-# trong RetrievedTable.to_row(), không ai phải nhớ nữa.
+# Việc đổi tên khóa giữa hai thế giới ("score" → "similarity") nằm gọn trong
+# RetrievedTable.to_row(), không chỗ gọi nào phải nhớ.
 #
 # Vì sao KHÔNG dùng pydantic như src/schemas/: schemas/ là DTO của API (dữ liệu từ
 # ngoài vào, cần validate). Hai kiểu này chạy trong vòng lặp nóng — mỗi câu hỏi sinh
-# ra top_k_pool object — và không bao giờ nhận dữ liệu từ người dùng, nên NamedTuple
+# ra hàng chục object — và không bao giờ nhận dữ liệu từ người dùng, nên NamedTuple
 # vừa nhẹ vừa đủ an toàn.
 # =============================================================================
 from __future__ import annotations
@@ -22,7 +20,7 @@ from typing import Any, Dict, Iterable, List, NamedTuple
 
 
 class RetrievedRow(NamedTuple):
-    """Một dòng trong mảng "retrieved" của file JSON (turn*/dev*.json, result/dev.json).
+    """Một dòng trong mảng "retrieved" của file kết quả (turn{H}/dev.json).
 
     Thứ tự field ở đây CHÍNH LÀ thứ tự khóa khi ghi ra JSON — giữ nguyên
     rank/schema/similarity để file mới đọc được bằng code cũ và ngược lại.
@@ -32,9 +30,8 @@ class RetrievedRow(NamedTuple):
     rank: int
     # Chuỗi schema "db_id.table(col1, col2, ...)"
     schema: str
-    # Điểm tương đồng với câu truy vấn. Ở turn*/dev*.json đây là cosine similarity;
-    # ở result/dev.json thì là Score_Table (log-scale, có thể âm) — cùng tên khóa vì
-    # file format của tác giả gốc như vậy.
+    # Score_Table của câu hỏi (§3.5). Tên khóa là `similarity` vì file format của
+    # tác giả gốc như vậy — giữ nguyên để công cụ đọc file cũ vẫn dùng được.
     similarity: float
 
     @classmethod
@@ -51,16 +48,11 @@ class RetrievedRow(NamedTuple):
 
 
 class RetrievedTable(NamedTuple):
-    """Một bảng do methods/*.run() trả về — dùng trong bộ nhớ, không ghi thẳng ra file.
-
-    Cả 3 method (murre / single_hop / crush) đều trả về List[RetrievedTable]; đây
-    chính là giao diện chung mà methods/build.build_retriever() hứa hẹn.
-    """
+    """Một bảng do MurreRetriever.run() trả về — trong bộ nhớ, không ghi thẳng ra file."""
 
     # Chuỗi schema "db_id.table(col1, col2, ...)"
     schema: str
-    # Điểm xếp hạng của method: cosine similarity (single_hop/crush) hoặc
-    # Score_Table (murre). Càng lớn càng tốt.
+    # Score_Table (§3.5, Algorithm 1). Càng lớn càng tốt.
     score: float
 
     def to_row(self, rank: int) -> RetrievedRow:

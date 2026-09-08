@@ -1,19 +1,26 @@
 # src/config.py
-"""Nạp và validate cấu hình từ config.yaml.
+"""Nạp và validate cấu hình từ config.yaml — MỘT file duy nhất cho mọi dataset.
 
 Mặc định của MỌI section nằm ngay trong file này (các class *Config bên dưới).
-Section nào có trong config.yaml thì ghi đè mặc định tương ứng — trừ `llm`, bắt
-buộc phải khai trong config.yaml. Trỏ file khác qua env `MURRE_CONFIG_PATH`.
+Section nào có trong config.yaml thì ghi đè mặc định tương ứng — trừ `encoders` và
+`llm`, bắt buộc phải khai.
 
     from config import cfg
 
-    cfg.pipeline.method                # "murre"
-    cfg.dataset_paths.tables           # dataset/spider/tables.json
-    cfg.outputs.result()               # outputs/spider/sgpt-125m-.../murre/result/turn3/dev.json
-    cfg.outputs.sql(k=5)               # outputs/spider/sgpt-125m-.../murre/result/turn3/sql.5.txt
+    cfg.dataset_paths.tables            # dataset/spider/tables.json
+    cfg.encoder_for("vitext2sql")       # profile encoder của dataset tiếng Việt
+    cfg.outputs.result()                # outputs/spider/sgpt-125m-.../turn3/dev.json
+    cfg.outputs.sql(k=5)                # outputs/spider/sgpt-125m-.../turn3/sql.5.txt
 
-.env ghi đè 3 giá trị đổi theo máy: OPENAI_API_KEY, OPENAI_BASE_URL,
-ENCODER_MODEL_NAME (xem _apply_env_overrides).
+MỖI DATASET KHAI ENCODER RIÊNG (`datasets.<ds>.encoder` → một khoá trong
+`encoders`). Encoder gắn với ngôn ngữ của dataset, nên đổi dataset là encoder tự
+đi theo — không cần file config thứ hai, không cần biến môi trường.
+
+Chỉ BÍ MẬT mới đi qua .env, vì config.yaml nằm trong git:
+    OPENAI_API_KEY, OPENAI_BASE_URL   (ghi đè profile LLM đang active)
+
+Trỏ sang file config khác: `--config <đường dẫn>` hoặc env MURRE_CONFIG_PATH —
+dùng khi mỗi môi trường triển khai có một file riêng.
 """
 
 from __future__ import annotations
@@ -22,17 +29,21 @@ import json
 import os
 import sys
 from pathlib import Path
-from string import Formatter
 from typing import Any, Dict, List, Optional
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 # Mọi đường dẫn trong config đều tương đối so với gốc project, nên chdir về gốc
-# ngay khi import → chạy từ đâu cũng đúng (PyCharm, terminal trong src/steps/...).
+# ngay khi import → chạy từ đâu cũng đúng (PyCharm, terminal trong src/core/...).
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH: Path = PROJECT_ROOT / "config.yaml"
+
+# Thư mục người dùng đang đứng lúc gọi lệnh — phải nhớ TRƯỚC khi chdir, để còn
+# giải được đường dẫn tương đối của --config theo đúng cảm nhận của người gõ
+# (đứng ở src/ mà gõ "../config.x.yaml" thì phải ra gốc project).
+LAUNCH_DIR: Path = Path.cwd()
 
 os.chdir(PROJECT_ROOT)
 
@@ -49,8 +60,8 @@ def model_slug(name: str) -> str:
         → sgpt-125m-weightedmean-msmarco-specb-bitfit
 
     Bỏ phần org trước "/", hạ chữ thường, ký tự lạ đổi thành "-". Nhờ vậy đổi
-    encoder.model_name là outputs/ tự tách theo model, không cần khai thêm biến
-    nào và không lo hai model ghi đè kết quả của nhau.
+    model_name của encoder là outputs/ tự tách theo model, không cần khai thêm
+    biến nào và không lo hai model ghi đè kết quả của nhau.
     """
     tail: str = name.strip().rstrip("/").split("/")[-1].lower()
     safe: str = "".join(c if c.isalnum() or c in "._-" else "-" for c in tail)
@@ -60,14 +71,33 @@ def model_slug(name: str) -> str:
 class GeneralConfig(BaseModel):
     dataset: str = "spider"  # spider | bird
     top_k: List[int] = [3, 5, 10, 20]  # các k để tính recall (paper báo cáo 4 mức này)
-    random_seed: int = 42
 
 
-class EncoderConfig(BaseModel):
+class EncoderProfileConfig(BaseModel):
+    """Một encoder khai trong `encoders` — mỗi dataset trỏ tới một profile ở đây."""
+
     # Tắt namespace `model_` của pydantic để dùng được tên field `model_name`.
     model_config = ConfigDict(protected_namespaces=())
+
     model_name: str
+    # Họ encoder — quyết định cách gộp token và cách phân biệt query/document.
+    #   sgpt     : SGPT của paper (SPECB + weighted-mean). Chỉ dùng cho tiếng Anh.
+    #   sentence : bi-encoder BERT/XLM-R (mean pooling + tiền tố). Bắt buộc cho
+    #              corpus tiếng Việt — xem docstring core/encoder.py.
+    type: str = "sgpt"
     batch_size: int = 256
+    # Trần TOKEN cho một batch (số câu × độ dài câu dài nhất). Đây mới là thứ chặn
+    # tràn bộ nhớ; `batch_size` chỉ đếm số câu nên không thấy được câu dài. Xem
+    # core/encoder.py::plan_batches — schema dài 598 token với batch 256 từng làm
+    # torch nổ ACCESS_VIOLATION trên máy 16 GB.
+    max_batch_tokens: int = 16384
+    # Cắt bớt chuỗi quá dài. Chỉ `sentence` dùng; SGPT theo đúng bản gốc, cắt theo
+    # giới hạn của chính model.
+    max_length: int = 512
+    # Tiền tố theo vai trò, chỉ `sentence` dùng. E5 được huấn luyện với
+    # "query: " / "passage: "; bỏ đi là điểm tụt hẳn.
+    query_prefix: str = ""
+    doc_prefix: str = ""
 
     @property
     def slug(self) -> str:
@@ -95,79 +125,82 @@ class LLMConfig(BaseModel):
     profiles: Dict[str, LLMProfileConfig]
 
 
-class AblationConfig(BaseModel):
-    """Hai cờ ablation của paper (Table 4, §4.3) — false để tắt từng thành phần.
-
-    Early Stop luôn bật: khi Removal trả "None" thì dừng sớm, không có cờ để tắt.
-    """
-    removal: bool = True     # false = nối câu hỏi + bảng đã tìm, thay vì Removal
-    tabulation: bool = True  # false = Removal trả câu tự nhiên, không ép sang dạng schema
-
-
 class PipelineConfig(BaseModel):
-    method: str = "murre"  # murre | single_hop | crush
-    # B của paper (§4.1). Với MURRE, B vừa là số nhánh giữ lại, vừa là số bảng mỗi
-    # nhánh retrieve ở mỗi hop (§3.3) → mỗi hop sinh tối đa B×B đường đi.
-    beam_size: int = 5
+    # B của paper (§4.1). B vừa là số nhánh giữ lại, vừa là số bảng mỗi nhánh
+    # retrieve ở mỗi hop (§3.3) → mỗi hop sinh tối đa B×B đường đi.
+    beam_size: int = Field(default=5, ge=1)
     # H của paper (§4.1), ĐẾM CẢ hop 1: max_hop=3 → hop 1, 2, 3, tức chỉ 2 lượt
-    # Removal. max_hop=1 nghĩa là single-hop. Xem Table 5 và slurm/run.sh.
-    max_hop: int = 3
-    # Độ sâu danh sách trả về của single_hop và crush. MURRE KHÔNG dùng: theo §3.3
-    # nó quét toàn corpus mỗi hop và chỉ xếp hạng bảng nằm trên đường đi (Alg. 1),
-    # nên độ dài kết quả do beam_size × max_hop quyết định.
-    top_k_pool: int = 100
-    top_n_output: int = 5  # số bảng truyền vào bước sinh SQL
+    # Removal. max_hop=1 nghĩa là single-hop.
+    max_hop: int = Field(default=3, ge=1)
+    # Số bảng mặc định lấy ra: mặc định của /retrieve, /sql và `cli ask`.
+    # Tên là top_k cho khớp thuật ngữ top-K của paper; `general.top_k` là chuyện
+    # khác — đó là DANH SÁCH các mức k để tính metric.
+    top_k_output: int = Field(default=5, ge=1)
     # Số lần thử lại MỘT CÂU HỎI khi retriever ném lỗi (LLM timeout, 429, Ollama bận).
     # Một lượt chạy đầy đủ là hàng nghìn lần gọi LLM, gặp lỗi tạm thời là chắc chắn.
-    question_retries: int = 3
-    ablation: AblationConfig = Field(default_factory=AblationConfig)
+    question_retries: int = Field(default=3, ge=1)
 
 
-class DatasetPathsConfig(BaseModel):
-    """Đường dẫn dữ liệu đầu vào của MỘT dataset (paths.spider / paths.bird)."""
+class DatasetConfig(BaseModel):
+    """Mọi thứ riêng của MỘT dataset: dữ liệu đầu vào + encoder dùng cho nó.
 
-    tables: str
-    dev: str
-    gold: str
-    prompt: str
-    prompt_no_tabulation: str
-    prompt_crush: str
+    `encoder` trỏ tới một khoá trong `encoders`. Encoder gắn với NGÔN NGỮ của
+    dataset (SGPT chỉ hiểu tiếng Anh), nên nó thuộc về dataset chứ không phải là
+    một giá trị toàn cục — khai ở đây thì đổi dataset là encoder tự đi theo, không
+    cần file config riêng hay biến môi trường nào.
 
-    @classmethod
-    def for_dataset(cls, name: str) -> "DatasetPathsConfig":
-        """Dựng đủ 6 đường dẫn theo quy ước chung — thêm dataset mới chỉ cần đặt
-        file đúng quy ước rồi thêm 1 field trong PathsConfig."""
-        return cls(
-            tables=f"dataset/{name}/tables.json",
-            dev=f"dataset/{name}/dev.json",
-            gold=f"dataset/{name}/gold.txt",
-            prompt=f"prompts/{name}_rewrite.txt",
-            prompt_no_tabulation=f"prompts/{name}_rewrite_no_tabulation.txt",
-            prompt_crush=f"prompts/{name}_crush.txt",
-        )
+    Ba đường dẫn để trống thì DatasetsConfig tự điền theo quy ước, nên trong
+    config.yaml chỉ cần khai đúng một dòng `encoder:`.
+    """
+
+    encoder: str                        # tên một profile trong `encoders`
+    tables: Optional[str] = None        # schema của mọi database
+    dev: Optional[str] = None           # câu hỏi + bảng gold (rel_schema)
+    prompt: Optional[str] = None        # prompt few-shot của pha Removal
+
+    def with_defaults(self, name: str) -> "DatasetConfig":
+        """Điền đường dẫn còn trống theo quy ước thư mục của project."""
+        return self.model_copy(update={
+            "tables": self.tables or f"dataset/{name}/tables.json",
+            "dev": self.dev or f"dataset/{name}/dev.json",
+            "prompt": self.prompt or f"prompts/{name}_rewrite.txt",
+        })
+
+
+class DatasetsConfig(BaseModel):
+    """Khai báo từng dataset. Tên field phải khớp member của enum Dataset."""
+
+    spider: DatasetConfig = Field(default_factory=lambda: DatasetConfig(encoder="sgpt"))
+    bird: DatasetConfig = Field(default_factory=lambda: DatasetConfig(encoder="sgpt"))
+    # Tiếng Việt. Dữ liệu dựng bằng scripts/prepare_vitext2sql.py, không có sẵn
+    # trong repo. Bắt buộc encoder đa ngữ: SGPT chỉ học tiếng Anh, dùng nó cho
+    # tiếng Việt thì recall gần như ngẫu nhiên (5.6 so với 82.2 ở r@5).
+    vitext2sql: DatasetConfig = Field(
+        default_factory=lambda: DatasetConfig(encoder="multilingual")
+    )
+
+    @model_validator(mode="after")
+    def _fill_paths(self) -> "DatasetsConfig":
+        """Điền đường dẫn theo TÊN FIELD — chỉ ở đây mới biết dataset tên gì."""
+        for name in type(self).model_fields:
+            setattr(self, name, getattr(self, name).with_defaults(name=name))
+        return self
 
 
 class PathsConfig(BaseModel):
-    # --- Dữ liệu đầu vào ---
-    spider: DatasetPathsConfig = Field(
-        default_factory=lambda: DatasetPathsConfig.for_dataset("spider")
-    )
-    bird: DatasetPathsConfig = Field(
-        default_factory=lambda: DatasetPathsConfig.for_dataset("bird")
-    )
+    """Chỉ còn TEMPLATE file đầu ra; đường dẫn đầu vào nằm ở `datasets`.
 
-    # --- File đầu ra ---
-    # TEMPLATE còn nguyên {placeholder}; đường dẫn thật lấy qua cfg.outputs.*().
-    # {dataset} {model} {method} {max_hop} điền từ cfg; {k} do chỗ gọi truyền.
-    # {model} = encoder.slug, suy ra từ encoder.model_name.
-    # Không còn template file trung gian (turn{N}/, rewrite/outputs/): pipeline giữ
-    # mọi thứ trong RAM kể từ khi chuỗi steps/{retrieve,rewrite,score}.py bị xoá.
+    Template còn nguyên {placeholder}; đường dẫn thật lấy qua cfg.outputs.*().
+    {dataset} {model} {max_hop} điền từ cfg; {k} do chỗ gọi truyền.
+    {model} là nhãn suy ra từ model_name của encoder GẮN VỚI DATASET đó.
+    """
+
     embeddings_cache: str = "outputs/{dataset}_{model}_embeddings.pt"
-    result: str = "outputs/{dataset}/{model}/{method}/result/turn{max_hop}/dev.json"
-    score: str = "outputs/{dataset}/{model}/{method}/result/turn{max_hop}/score.json"
-    sql: str = "outputs/{dataset}/{model}/{method}/result/turn{max_hop}/sql.{k}.txt"
+    result: str = "outputs/{dataset}/{model}/turn{max_hop}/dev.json"
+    score: str = "outputs/{dataset}/{model}/turn{max_hop}/score.json"
+    sql: str = "outputs/{dataset}/{model}/turn{max_hop}/sql.{k}.txt"
     # Ghi dần từng câu để chạy lại là tiếp tục được, không mất công đã chạy.
-    checkpoint: str = "outputs/{dataset}/{model}/{method}/result/turn{max_hop}/checkpoint.jsonl"
+    checkpoint: str = "outputs/{dataset}/{model}/turn{max_hop}/checkpoint.jsonl"
 
 
 class OutputPaths:
@@ -177,16 +210,16 @@ class OutputPaths:
     placeholder bắt buộc (k) là tham số THẬT nên gõ thiếu là biết ngay lúc viết
     code, không phải KeyError lúc chạy.
 
-        cfg.outputs.result()               → outputs/spider/sgpt-125m-.../murre/result/turn3/dev.json
-        cfg.outputs.sql(k=5)               → outputs/spider/sgpt-125m-.../murre/result/turn3/sql.5.txt
+        cfg.outputs.result()               → outputs/spider/sgpt-125m-.../turn3/dev.json
+        cfg.outputs.sql(k=5)               → outputs/spider/sgpt-125m-.../turn3/sql.5.txt
 
     Cần đường dẫn của lần chạy KHÁC mà không ghi đè `cfg` toàn cục thì dùng for_run()
     — /evaluate làm đúng vậy:
 
-        cfg.outputs.for_run(dataset="bird", model="sgpt-1.3b-...", method="crush").result()
+        cfg.outputs.for_run(dataset="bird", model="sgpt-1.3b-...").result()
     """
 
-    def __init__(self, settings: Settings, **overrides: Any) -> None:
+    def __init__(self, settings: "Settings", **overrides: Any) -> None:
         self._settings: Settings = settings
         self._overrides: Dict[str, Any] = overrides
 
@@ -195,26 +228,26 @@ class OutputPaths:
         *,
         dataset: Optional[str] = None,
         model: Optional[str] = None,
-        method: Optional[str] = None,
         max_hop: Optional[int] = None,
-    ) -> OutputPaths:
-        """Bản sao chỉ khác ở bốn giá trị này; để None thì giữ nguyên theo `cfg`."""
+    ) -> "OutputPaths":
+        """Bản sao chỉ khác ở ba giá trị này; để None thì giữ nguyên theo `cfg`."""
         merged: Dict[str, Any] = dict(self._overrides)
         for name, value in (
-            ("dataset", dataset), ("model", model),
-            ("method", method), ("max_hop", max_hop),
+            ("dataset", dataset), ("model", model), ("max_hop", max_hop),
         ):
             if value is not None:
                 merged[name] = value
         return OutputPaths(self._settings, **merged)
 
     def _render(self, template: str, **extra: Any) -> str:
-        """Điền 4 giá trị từ cfg (đã tính override) + placeholder riêng của template."""
+        """Điền 3 giá trị từ cfg (đã tính override) + placeholder riêng của template."""
         s: Settings = self._settings
+        dataset: str = self._overrides.get("dataset") or s.general.dataset
         values: Dict[str, Any] = {
-            "dataset": s.general.dataset,
-            "model": s.encoder.slug,
-            "method": s.pipeline.method,
+            "dataset": dataset,
+            # Nhãn model đi theo ĐÚNG DATASET đang render, không phải một encoder
+            # toàn cục — spider và vitext2sql dùng encoder khác nhau.
+            "model": s.encoder_for(dataset).slug,
             "max_hop": s.pipeline.max_hop,
             **self._overrides,
             **extra,
@@ -239,15 +272,23 @@ class OutputPaths:
 
 
 class LoggingConfig(BaseModel):
-    level: str = "DEBUG"  # DEBUG | INFO | WARNING | ERROR
+    level: str = "INFO"  # DEBUG | INFO | WARNING | ERROR
     log_to_file: bool = True  # true = ghi thêm ra file (append), vẫn in ra console
     log_dir: str = "outputs/logs"  # chỉ dùng khi log_to_file: true
     log_file: str = "murre.log"
 
+
 class ApiConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
-    default_top_n: int = 5  # số bảng trả về tối đa qua /retrieve
+
+    # Dataset mà service này phục vụ. Rỗng = mọi dataset có tables.json trên đĩa.
+    #
+    # Nên khai tường minh: cả service dùng CHUNG MỘT encoder, mà encoder thì gắn với
+    # ngôn ngữ (SGPT cho tiếng Anh, đa ngữ cho tiếng Việt). Để rỗng thì thêm dữ liệu
+    # tiếng Việt vào đĩa là service tiếng Anh cũng nạp nó lúc khởi động — mã hoá cả
+    # corpus bằng model không hiểu tiếng Việt, chậm mà lại vô dụng.
+    datasets: List[str] = []
 
     # true  → nạp encoder/LLM/embeddings và ping LLM TRƯỚC khi nhận request; thiếu gì
     #         thì startup hỏng luôn. Lên chậm, đổi lại /retrieve chắc chắn chạy.
@@ -255,15 +296,16 @@ class ApiConfig(BaseModel):
     # (xem api/dependencies.py::warmup_datasets)
     preload: bool = True
 
+    # Origin được phép gọi API từ trình duyệt. Rỗng = không bật CORS (mặc định:
+    # service nội bộ, gọi từ backend khác chứ không từ browser).
+    cors_origins: List[str] = []
 
-class RunOptionConfig(BaseModel):
-    # one_question → chạy MỘT câu hỏi, in top-N ra terminal, không ghi file.
-    # batch        → chạy CẢ dev.json, ghi result + score ra outputs/.
-    mode: str = "batch"
+    # true → response 500 kèm traceback. CHỈ bật khi debug, không bật ở production.
+    debug_errors: bool = False
 
 
 class Settings(BaseModel):
-    """Root config — mọi section có mặc định sẵn, TRỪ `encoder` và `llm`.
+    """Root config — mọi section có mặc định sẵn, TRỪ `encoders` và `llm`.
 
     Hai section đó bắt buộc khai trong config.yaml vì chúng quyết định model nào
     được nạp/tải về. Có mặc định ở đây thì khai thiếu vẫn chạy được, chỉ là chạy
@@ -271,17 +313,24 @@ class Settings(BaseModel):
     """
 
     general: GeneralConfig = Field(default_factory=GeneralConfig)
-    encoder: EncoderConfig
+    encoders: Dict[str, EncoderProfileConfig]
     llm: LLMConfig
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+    datasets: DatasetsConfig = Field(default_factory=DatasetsConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
-    run_option: RunOptionConfig = Field(default_factory=RunOptionConfig)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Config dạng dict thuần, JSON-safe — dùng cho endpoint /config."""
-        return self.model_dump(mode="json")
+        """Config dạng dict thuần, JSON-safe — dùng cho endpoint /config.
+
+        api_key bị che: /config là endpoint đọc công khai của service.
+        """
+        data: Dict[str, Any] = self.model_dump(mode="json")
+        for profile in data.get("llm", {}).get("profiles", {}).values():
+            if profile.get("api_key"):
+                profile["api_key"] = "***"
+        return data
 
     @property
     def outputs(self) -> OutputPaths:
@@ -289,34 +338,46 @@ class Settings(BaseModel):
         (`cfg.paths.*` là template; `cfg.outputs.*()` là đường dẫn thật.)"""
         return OutputPaths(self)
 
-    def paths_for(self, dataset: Optional[str] = None) -> DatasetPathsConfig:
-        """Nhóm đường dẫn đầu vào của `dataset`. None → `general.dataset` đang chọn.
+    def dataset_config(self, dataset: Optional[str] = None) -> DatasetConfig:
+        """Khai báo của `dataset`. None → `general.dataset` đang chọn.
 
         Nhận dataset tường minh để chỗ gọi (API phục vụ nhiều dataset cùng lúc)
         không phải ghi đè general.dataset — biến toàn cục, đổi là mọi request thấy.
         """
         name: str = dataset or self.general.dataset
-        group: Any = getattr(self.paths, name, None)
-        if not isinstance(group, DatasetPathsConfig):
-            available: List[str] = [
-                field
-                for field in type(self.paths).model_fields
-                if isinstance(getattr(self.paths, field), DatasetPathsConfig)
-            ]
+        group: Any = getattr(self.datasets, name, None)
+        if not isinstance(group, DatasetConfig):
             raise ValueError(
-                f"dataset='{name}' chưa khai báo đường dẫn trong paths.\n"
-                f"  Dataset có sẵn: {available}"
+                f"dataset='{name}' chưa khai báo trong `datasets`.\n"
+                f"  Dataset có sẵn: {list(type(self.datasets).model_fields)}"
             )
         return group
 
+    def encoder_for(self, dataset: Optional[str] = None) -> EncoderProfileConfig:
+        """Encoder của `dataset` — tra `datasets.<ds>.encoder` trong `encoders`.
+
+        Đây là chỗ ràng dataset với encoder. Nhờ nó mà chỉ cần đổi
+        `general.dataset` (hay truyền --dataset) là encoder tự đi theo đúng ngôn
+        ngữ, không phải nhớ sửa thêm gì.
+        """
+        name: str = self.dataset_config(dataset).encoder
+        profile: Optional[EncoderProfileConfig] = self.encoders.get(name)
+        if profile is None:
+            raise ValueError(
+                f"dataset='{dataset or self.general.dataset}' trỏ tới encoder "
+                f"'{name}' nhưng `encoders` không có profile đó.\n"
+                f"  Profile có sẵn: {list(self.encoders)}"
+            )
+        return profile
+
     @property
-    def dataset_paths(self) -> DatasetPathsConfig:
-        """Nhóm đường dẫn đầu vào của `general.dataset` đang chọn.
+    def dataset_paths(self) -> DatasetConfig:
+        """Khai báo của `general.dataset` đang chọn.
 
             cfg.dataset_paths.tables   → "dataset/spider/tables.json"
             cfg.dataset_paths.prompt   → "prompts/spider_rewrite.txt"
         """
-        return self.paths_for()
+        return self.dataset_config()
 
 
 # ---------------------------------------------------------------------------
@@ -344,23 +405,66 @@ def _apply_env_overrides(settings: Settings) -> None:
     if base_url:
         active.base_url = base_url
 
-    model_name: str = os.getenv("ENCODER_MODEL_NAME", "")
-    if model_name:
-        settings.encoder.model_name = model_name
+    # KHÔNG có override cho encoder: giờ mỗi dataset khai encoder riêng nên một biến
+    # môi trường đơn lẻ không nói được là ghi đè cái nào. Đổi encoder thì sửa thẳng
+    # `encoders` trong config.yaml.
+
+
+def config_path_from_argv(argv: Optional[List[str]] = None) -> Optional[str]:
+    """Đọc `--config <đường dẫn>` (hoặc `--config=<đường dẫn>`) từ dòng lệnh.
+
+    Có cờ này vì biến môi trường MURRE_CONFIG_PATH rất hay hụt trong IDE: đặt ở
+    terminal này rồi chạy ở terminal khác, hoặc quên điền vào Run Configuration —
+    server vẫn lên bình thường nhưng nạp nhầm config, và chỉ lòi ra ở lần gọi API
+    đầu tiên. Cờ dòng lệnh thì nhìn thấy ngay trong lệnh đang chạy.
+
+    Phải đọc thẳng sys.argv chứ không qua argparse: `cfg` được nạp ngay lúc import
+    config.py, tức là trước khi bất kỳ parser nào kịp chạy.
+    """
+    args: List[str] = list(sys.argv[1:] if argv is None else argv)
+    for i, arg in enumerate(args):
+        if arg == "--config" and i + 1 < len(args):
+            return args[i + 1]
+        if arg.startswith("--config="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def resolve_config_path(value: str) -> Path:
+    """Đường dẫn config người dùng đưa vào → đường dẫn tuyệt đối.
+
+    Thử theo thư mục đang đứng trước (LAUNCH_DIR), rồi mới theo gốc project. Nhờ
+    vậy đứng ở src/ gõ "../config.prod.yaml" hay đứng ở gốc gõ "config.prod.yaml"
+    đều ra cùng một file.
+    """
+    given: Path = Path(value).expanduser()
+    if given.is_absolute():
+        return given
+
+    from_launch: Path = (LAUNCH_DIR / given).resolve()
+    if from_launch.exists():
+        return from_launch
+    return (PROJECT_ROOT / given).resolve()
 
 
 def load_settings(config_path: Optional[Path] = None) -> Settings:
-    """Đọc config.yaml (hoặc file được chỉ định) và trả về Settings đã validate."""
+    """Đọc config.yaml (hoặc file được chỉ định) và trả về Settings đã validate.
 
-    path: Path = config_path or Path(
-        os.getenv("MURRE_CONFIG_PATH", str(DEFAULT_CONFIG_PATH))
-    )
+    Thứ tự ưu tiên: tham số hàm → `--config` → env MURRE_CONFIG_PATH → config.yaml.
+    """
+    if config_path is not None:
+        path: Path = config_path
+    else:
+        chosen: Optional[str] = config_path_from_argv() or os.getenv("MURRE_CONFIG_PATH")
+        path = resolve_config_path(value=chosen) if chosen else DEFAULT_CONFIG_PATH
 
     if not path.exists():
         raise FileNotFoundError(
-            f"Không tìm thấy file cấu hình: {path.resolve()}. "
-            "Đặt config.yaml ở gốc project (MURRE_V2/) hoặc chỉ định qua biến môi "
-            "trường MURRE_CONFIG_PATH."
+            f"Không tìm thấy file cấu hình: {path}\n"
+            f"  Đã thử theo thư mục đang đứng ({LAUNCH_DIR}) và theo gốc project "
+            f"({PROJECT_ROOT}).\n"
+            f"  Config có sẵn: "
+            f"{', '.join(sorted(f.name for f in PROJECT_ROOT.glob('config*.yaml'))) or 'không có'}"
         )
 
     with path.open("r", encoding="utf-8") as f:
@@ -385,24 +489,6 @@ def load_settings(config_path: Optional[Path] = None) -> Settings:
     return settings
 
 
-# ---------------------------------------------------------------------------
-# Helper đường dẫn & LLM profile
-# ---------------------------------------------------------------------------
-def list_llm_profiles() -> List[str]:
-    """Tên mọi profile LLM trong config.yaml (llm.profiles) — xem HUONG_DAN.md mục 3b."""
-    return list(cfg.llm.profiles)
-
-
-def print_llm_profiles() -> None:
-    """In các profile LLM, đánh dấu * vào cái đang dùng. Chạy: python -m config --llm"""
-    active: str = cfg.llm.active_profile
-    print(f"{'=' * 60}\n  LLM PROFILE trong config.yaml\n{'=' * 60}")
-    for name in list_llm_profiles():
-        mark: str = "*" if name == active else " "
-        print(f"  {mark} {name}")
-    print(f"{'=' * 60}\n  (* = llm.active_profile đang dùng)")
-
-
 def get_llm_profile(profile_name: Optional[str] = None) -> LLMProfileConfig:
     """Cấu hình của 1 profile LLM. None → dùng cfg.llm.active_profile.
 
@@ -412,53 +498,9 @@ def get_llm_profile(profile_name: Optional[str] = None) -> LLMProfileConfig:
     if name not in cfg.llm.profiles:
         raise ValueError(
             f"LLM profile '{name}' không tồn tại trong config.yaml (llm.profiles).\n"
-            f"Các profile có sẵn: {list_llm_profiles()}"
+            f"Các profile có sẵn: {list(cfg.llm.profiles)}"
         )
     return cfg.llm.profiles[name]
-
-
-def print_config() -> None:
-    """In toàn bộ cấu hình hiện tại ra terminal để kiểm tra."""
-    print(f"{'=' * 60}\n  CẤU HÌNH HIỆN TẠI\n{'=' * 60}")
-    print(json.dumps(cfg.to_dict(), indent=2, ensure_ascii=False))
-    print("=" * 60)
-
-
-# Giá trị MẪU cho placeholder không suy ra được từ cfg — chỉ dùng trong print_paths().
-_EXAMPLE_PLACEHOLDERS: Dict[str, Any] = {"hop": 1, "beam": 2, "k": 5}
-
-
-def print_paths() -> None:
-    """In mọi đường dẫn ĐÃ RESOLVE theo cfg hiện tại. Chạy: python -m config --paths"""
-    header: str = (
-        f"dataset={cfg.general.dataset} model={cfg.encoder.slug} "
-        f"method={cfg.pipeline.method} max_hop={cfg.pipeline.max_hop}"
-    )
-    print(f"{'=' * 78}\n  ĐƯỜNG DẪN THỰC TẾ — {header}\n{'=' * 78}")
-
-    print(f"\n--- Dữ liệu đầu vào (cfg.dataset_paths → paths.{cfg.general.dataset}) ---")
-    ds_paths: DatasetPathsConfig = cfg.dataset_paths
-    for name in DatasetPathsConfig.model_fields:
-        print(f"  {name:22s} {getattr(ds_paths, name)}")
-
-    print("\n--- File trung gian & đầu ra (cfg.outputs.*) ---")
-    # Lặp theo TÊN template nên phải render động bằng _render(). Code ngoài config.py
-    # thì luôn gọi method: cfg.outputs.result(), ...
-    resolver: OutputPaths = cfg.outputs
-    for name, template in cfg.paths.model_dump().items():
-        # Bỏ qua spider/bird — đó là đường dẫn đầu vào, đã in ở khối trên.
-        if not isinstance(template, str):
-            continue
-
-        extra: Dict[str, Any] = {
-            field: _EXAMPLE_PLACEHOLDERS[field]
-            for _, field, _, _ in Formatter().parse(template)
-            if field in _EXAMPLE_PLACEHOLDERS
-        }
-        call: str = f"{name}({', '.join(f'{k}={v}' for k, v in extra.items())})"
-        print(f"  {call:34s} {resolver._render(template, **extra)}")
-
-    print("=" * 78)
 
 
 # Singleton — nạp một lần khi module được import lần đầu, dùng chung cả project.
@@ -466,13 +508,5 @@ cfg: Settings = load_settings()
 
 
 if __name__ == "__main__":
-    #   python -m config          → toàn bộ cấu hình đang hiệu lực (JSON)
-    #   python -m config --paths  → mọi đường dẫn đã resolve theo cfg hiện tại
-    #   python -m config --llm    → danh sách profile LLM trong config.yaml
-    args: List[str] = sys.argv[1:]
-    if "--paths" in args:
-        print_paths()
-    elif "--llm" in args:
-        print_llm_profiles()
-    else:
-        print_config()
+    # python -m config → toàn bộ cấu hình đang hiệu lực (JSON)
+    print(json.dumps(cfg.to_dict(), indent=2, ensure_ascii=False))
