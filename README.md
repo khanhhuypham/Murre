@@ -89,7 +89,7 @@ Mọi lệnh chạy **từ thư mục `src/`**.
 cd src
 
 python -m cli ask                            # câu đầu dev.json, in top-K bảng
-python -m cli ask -q "Which airlines fly to AHD?" -v
+python -m cli ask -q "Which airlines fly to AHD?" -v -k 10
 python -m cli ask --dataset vitext2sql -v    # tiếng Việt
 python -m cli run --limit 20                 # 20 câu đầu, ghi kết quả ra outputs/
 python -m cli run --dataset bird             # cả dev.json của BIRD
@@ -129,6 +129,7 @@ Docs tương tác: <http://localhost:8000/docs>
 | `POST /retrieve` | câu hỏi → danh sách bảng đã xếp hạng |
 | `POST /sql` | câu hỏi → bảng liên quan → câu lệnh SQL |
 | `POST /pipeline/run` | chạy cả dev.json rồi trả metric; `?wait=false` → job để poll |
+| `GET /pipeline/jobs` | danh sách job đã tạo (chỉ trong RAM, restart là mất) |
 | `GET /pipeline/jobs/{id}` | tiến độ / kết quả của một lần chạy |
 | `GET /evaluate` | tính lại recall@k từ kết quả đã có trên đĩa |
 | `GET /evaluate/available` | những lần chạy nào đã có kết quả |
@@ -171,8 +172,9 @@ không lỗi vì thiếu model. `/health` trả 503 trong suốt lúc đó.
 `/pipeline/run`; gọi chồng lên sẽ nhận `409`.
 
 **Thời gian**: mỗi câu tốn `beam_size × (max_hop − 1)` lần gọi LLM cho pha Removal,
-cộng 1 lần sinh SQL. Với mặc định 5 × 2 = 10 lượt, `/sql` mất khoảng 100–200 giây
-một câu. Gọi bằng Postman thì đặt **Settings → Request timeout in ms** = `0`.
+cộng 1 lần sinh SQL. Với mặc định 5 × 2 = 10 lượt, đo trên Ollama + qwen2.5-coder:7b
+thì `/sql` mất **80–200 giây** một câu (câu cần nhiều bảng thì lâu hơn). Gọi bằng
+Postman thì đặt **Settings → Request timeout in ms** = `0`, kẻo bị ngắt giữa chừng.
 
 ---
 
@@ -245,18 +247,24 @@ cd src && python -m server --config ../config.prod.yaml
 
 ## 7. Dữ liệu
 
+Có HAI bố cục, phân biệt bằng `datasets.<ds>.format` trong `config.yaml`.
+
+**`format: murre`** — đã tiền xử lý sẵn, đi kèm repo:
+
 ```
-dataset/{spider,bird,vitext2sql}/
+dataset/{spider,bird}/
 ├── tables.json    schema của mọi database, kèm khoá `schema` đã tiền xử lý
 ├── dev.json       câu hỏi + bảng gold (rel_schema)  ← đầu vào của retrieval
 └── gold.txt       câu SQL đúng, để đối chiếu sql.{k}.txt bằng công cụ ngoài
 ```
 
-`spider` và `bird` đi kèm repo. `vitext2sql` thì không — xem mục kế.
+**`format: vitext2sql`** — dữ liệu THÔ, giữ nguyên xi bản gốc, tải riêng. Bố cục
+khác hẳn và **không có `gold.txt`** (câu SQL đúng nằm sẵn trong `dev.json`).
+Xem mục 7b.
 
-Thêm dataset mới: đặt `tables.json` + `dev.json` theo đúng quy ước trên, thêm
-`prompts/{tên}_rewrite.txt`, rồi thêm một field vào `DatasetsConfig` và một member
-vào `Dataset` (`src/enums.py`).
+Thêm dataset mới dạng `murre`: đặt `tables.json` + `dev.json` theo quy ước trên,
+thêm `prompts/{tên}_rewrite.txt`, rồi thêm một field vào `DatasetsConfig`
+(`src/config.py`) và một member vào `Dataset` (`src/enums.py`).
 
 ### 7b. Tiếng Việt — ViText2SQL
 
@@ -291,7 +299,7 @@ dataset/vitext2sql/
 ```
 
 Mỗi file được đối chiếu với GitHub API bằng kích thước **và** git blob SHA-1
-(`sha1("blob <độ dài> " + nội dung)` — đúng cách git tự băm), nên `--verify` nói
+(`sha1("blob <độ dài>\0" + nội dung)` — đúng cách git tự băm), nên `--verify` nói
 được chắc chắn là file trên đĩa giống upstream từng byte. File tải về mà lệch thì
 **không được ghi ra đĩa** — thà thiếu file còn hơn có file sai mà tưởng là đúng.
 
@@ -377,28 +385,45 @@ python scripts/build_vitext2sql_prompt.py --level word
 ## 8. Cấu trúc mã nguồn
 
 ```
-config.yaml               toàn bộ cấu hình, mọi dataset
+config.yaml                    toàn bộ cấu hình, mọi dataset
+requirements.txt               phụ thuộc lúc chạy (-dev.txt thêm pytest)
+pytest.ini                     đặt sys.path = src + scripts + gốc
+Dockerfile                     image chạy API, torch bản CPU
+
+prompts/                       prompt few-shot của pha Removal, một file / dataset
+dataset/                       DỮ LIỆU + cách đọc dữ liệu
+├── loader.py                  đọc mọi dataset, rẽ theo `format`, trả cùng hình dạng
+├── vitext2sql.py              thích nghi ViText2SQL THÔ sang định dạng MURRE
+├── spider/  bird/             dữ liệu đã tiền xử lý, đi kèm repo
+└── vitext2sql/data/           bản sao nguyên xi upstream (tải riêng, xem 7b)
+
+src/
+├── cli.py                     điểm vào CLI (ask / run / embed / config)
+├── server.py                  điểm vào API — tạo app, lifespan, exception handler
+├── config.py                  nạp & validate config.yaml, dựng mọi đường dẫn
+├── enums.py                   Dataset, JobStatus
+├── core/                      encoder (SGPT + đa ngữ), llm, rewriter (Removal), corpus
+├── pipeline/                  retriever (MURRE), runner (chạy batch), factory, sql
+├── api/                       dependencies (vòng đời model), evaluator, jobs, routers/
+├── models/                    kiểu dữ liệu miền: errors, records, retrieval, metrics
+├── schemas/                   DTO pydantic của API (common.py giữ phần chung)
+└── utils/                     logger, metrics, scoring, schema, display
 
 scripts/
 ├── download_vitext2sql.py     tải ViText2SQL về, giữ nguyên xi dữ liệu gốc
 └── build_vitext2sql_prompt.py dựng prompt Removal từ split train
 
-src/
-├── cli.py            điểm vào CLI (ask / run / embed / config)
-├── server.py         điểm vào API — tạo app, lifespan, exception handler
-├── config.py         nạp & validate config.yaml, dựng mọi đường dẫn
-├── enums.py          Dataset, JobStatus
-├── core/             encoder (SGPT + đa ngữ), llm, rewriter (Removal), corpus
-├── pipeline/         retriever (MURRE), runner (chạy batch), factory, sql
-├── api/              dependencies (vòng đời model), evaluator, jobs, routers/
-├── models/           kiểu dữ liệu miền: errors, records, retrieval, metrics
-├── schemas/          DTO pydantic của API (common.py giữ phần chung)
-└── utils/            logger, metrics, scoring, schema, display
+tests/                         125 test, không tải model và không gọi mạng
 ```
 
-Ranh giới quan trọng: tầng lõi (`core/`, `pipeline/`, `models/`) **không import
-FastAPI**. Lỗi có ngữ nghĩa được ném dưới dạng `AppError`, và `server.py` dịch
-sang HTTP đúng một lần bằng exception handler.
+Hai ranh giới đáng nhớ:
+
+- **`dataset/` nằm NGOÀI `src/`** vì nó vừa là dữ liệu vừa là cách đọc dữ liệu.
+  Mọi khác biệt định dạng bị chặn lại ở `loader.py`; phần còn lại của pipeline
+  chỉ thấy một hình dạng duy nhất.
+- **Tầng lõi (`core/`, `pipeline/`, `models/`) không import FastAPI.** Lỗi có ngữ
+  nghĩa được ném dưới dạng `AppError`, và `server.py` dịch sang HTTP đúng một lần
+  bằng exception handler.
 
 ---
 
@@ -458,5 +483,6 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-Test chạy trong vài giây: encoder và LLM đều được thay bằng bản giả, không tải
-model và không gọi mạng.
+125 test, chạy khoảng 20 giây — gần hết là thời gian import torch. Encoder và
+LLM đều được thay bằng bản giả: không tải model, không gọi mạng, không đụng tới
+`dataset/` hay `outputs/`.
