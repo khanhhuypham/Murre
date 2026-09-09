@@ -213,7 +213,8 @@ encoders:
 datasets:
     spider:     { encoder: sgpt }
     bird:       { encoder: sgpt }
-    vitext2sql: { encoder: multilingual }
+    # format: dữ liệu trên đĩa đang ở dạng nào — xem mục 7b
+    vitext2sql: { encoder: multilingual, format: vitext2sql }
 ```
 
 Những khoá hay chạm nhất:
@@ -223,6 +224,7 @@ Những khoá hay chạm nhất:
 | `general.dataset` | `spider` | `spider` \| `bird` \| `vitext2sql` |
 | `encoders.<tên>.type` | — | `sgpt` (tiếng Anh) hoặc `sentence` (đa ngữ) |
 | `datasets.<ds>.encoder` | theo ngôn ngữ | dataset này dùng profile encoder nào |
+| `datasets.<ds>.format` | `murre` | `murre` (đã tiền xử lý) hoặc `vitext2sql` (thô) |
 | `pipeline.beam_size` | 5 | B — số nhánh giữ lại mỗi hop |
 | `pipeline.max_hop` | 3 | H — **đếm cả hop 1**, nên H=3 là 2 lượt Removal |
 | `pipeline.top_k_output` | 5 | số bảng mặc định lấy ra (API và CLI) |
@@ -260,17 +262,14 @@ vào `Dataset` (`src/enums.py`).
 
 [ViText2SQL](https://github.com/VinAIResearch/ViText2SQL) (VinAI) là bản dịch
 Spider sang tiếng Việt: cùng 166 database / 876 bảng, nhưng câu hỏi và tên
-bảng/cột đều là tiếng Việt. Dữ liệu không đi kèm repo — dựng bằng:
+bảng/cột đều là tiếng Việt. Dữ liệu không đi kèm repo — tải bằng:
 
 ```bash
-python scripts/prepare_vitext2sql.py
+python scripts/download_vitext2sql.py            # cả 2 mức, mọi split (~76 MB)
+python scripts/download_vitext2sql.py --verify   # đối chiếu lại với upstream
 ```
 
-Lệnh trên tải dữ liệu từ GitHub, chuyển sang định dạng của MURRE và ghi vào
-`dataset/vitext2sql/`. Thư mục đó **không** được commit (khác spider/bird): nó là
-dữ liệu dẫn xuất, dựng lại bằng đúng một lệnh, và bản quyền thuộc về VinAI.
-
-Rồi chạy — không cần config riêng, không cần biến môi trường:
+Rồi chạy — không cần bước chuyển đổi nào:
 
 ```bash
 cd src
@@ -280,14 +279,54 @@ python -m cli run --dataset vitext2sql --limit 20
 
 Với API thì chỉ cần `"dataset": "vitext2sql"` trong body.
 
+**Dữ liệu giữ nguyên xi bản gốc.** Cây thư mục sao y upstream, file ghi nhị phân
+không parse lại:
+
+```
+dataset/vitext2sql/
+├── MANIFEST.json        ← script ghi ra, NẰM NGOÀI cây dữ liệu
+└── data/                ← bản sao nguyên vẹn của ViText2SQL/data/
+    ├── syllable-level/{dev,test,train,tables}.json, test_gold.sql
+    └── word-level/      (như trên)
+```
+
+Mỗi file được đối chiếu với GitHub API bằng kích thước **và** git blob SHA-1
+(`sha1("blob <độ dài> " + nội dung)` — đúng cách git tự băm), nên `--verify` nói
+được chắc chắn là file trên đĩa giống upstream từng byte. File tải về mà lệch thì
+**không được ghi ra đĩa** — thà thiếu file còn hơn có file sai mà tưởng là đúng.
+
+**MURRE cần định dạng khác, và phần đó nằm trong CODE.** Dữ liệu thô thiếu ba khoá
+mà pipeline cần:
+
+| MURRE cần | ViText2SQL có | Ai bù |
+| --- | --- | --- |
+| `tables.json` có khoá `schema` | không có | `dataset/vitext2sql.py::adapt_tables` |
+| `dev.json` có `utterance` | `question` | `adapt_split` |
+| `dev.json` có `rel_schema` (bảng gold) | không có | `adapt_split` → `gold_tables` |
+
+Việc bù chạy **lúc đọc file**, không ghi đè gì. `datasets.vitext2sql.format:
+vitext2sql` trong `config.yaml` là chỗ bật nó; `dataset/loader.py` rẽ theo khoá đó
+rồi trả về cùng một hình dạng cho cả ba dataset, nên phần còn lại của pipeline
+không cần biết có hai định dạng.
+
+Đổi lại: mỗi lần đọc phải dựng lại `schema` và `rel_schema` — đo trên split dev
+(954 câu, 166 database) là dưới một giây, không đáng kể so với mã hoá corpus, mà
+corpus thì đã có cache riêng.
+
+Bảng gold suy ra bằng cách lấy **mọi bảng trong FROM/JOIN, kể cả trong subquery** —
+quy tắc này đã đối chiếu với `dataset/spider/dev.json` và khớp 658/658 câu. Suy từ
+hai nguồn rồi hợp lại, vì mỗi nguồn thiếu một kiểu: cây cú pháp `sql` của
+ViText2SQL **bỏ sót bảng thứ ba ở các câu JOIN 3 bảng** (44/954 câu của split dev),
+còn đọc token thì không thấy bảng nằm trong subquery ở mệnh đề FROM.
+
 **Encoder phải là model đa ngữ.** SGPT chỉ học tiếng Anh, dùng nguyên nó cho tiếng
 Việt thì retrieval gần như ngẫu nhiên. Đo trên chính corpus này (954 câu,
 876 schema, chỉ hop 1 nên không có LLM xen vào):
 
-| encoder | r@3 | r@5 | r@10 | r@20 | mã hoá corpus |
-| --- | --- | --- | --- | --- | --- |
-| SGPT-125M (`type: sgpt`) | 4.0 | 5.6 | 10.2 | 16.6 | 322s |
-| multilingual-e5-base (`type: sentence`) | **73.4** | **82.2** | **90.7** | **94.6** | 188s |
+| encoder | r@3 | r@5 | r@10 | r@20 |
+| --- | --- | --- | --- | --- |
+| SGPT-125M (`type: sgpt`) | 4.0 | 5.6 | 10.2 | 16.6 |
+| multilingual-e5-base (`type: sentence`) | **73.4** | **82.2** | **90.7** | **94.6** |
 
 Nguyên nhân nằm ở tokenizer: BPE tiếng Anh của SGPT băm mỗi schema tiếng Việt ra
 **82 token** (schema tiếng Anh tương đương chỉ 24), câu hỏi 67 token thay vì 15 —
@@ -299,29 +338,26 @@ trỏ tới profile `multilingual`, kèm hai tiền tố `query: ` / `passage: `
 bắt buộc phải có. Để so sánh: cùng đo hop 1, Spider tiếng Anh với SGPT-125M được
 r@3/5/10/20 = 63.0 / 73.1 / 80.7 / 86.3 — đúng bằng Bảng 2 của paper.
 
-**Hai định dạng khác nhau chỗ nào.** ViText2SQL giữ nguyên định dạng THÔ của
-Spider, script phải bù ba thứ:
+**Đổi mức tách từ hoặc đổi split.** ViText2SQL có `syllable` (âm tiết rời,
+"kiến trúc sư") và `word` (nối gạch dưới, "kiến_trúc_sư"). Mức `word` dành cho
+model tiếng Việt có word segmentation (PhoBERT); với bi-encoder thông thường thì
+`syllable` tự nhiên hơn nên đó là mặc định. Cả hai mức đã nằm sẵn trên đĩa — đổi
+bằng cách trỏ thẳng đường dẫn trong `config.yaml`:
 
-| MURRE cần | ViText2SQL có | Script làm gì |
-| --- | --- | --- |
-| `tables.json` có khoá `schema` | không có | dựng `"db.bảng(cột, ...)"` từ `table_names` + `column_names` |
-| `dev.json` có `utterance` | `question` | đổi tên khoá |
-| `dev.json` có `rel_schema` (bảng gold) | không có | suy ra từ câu truy vấn |
+```yaml
+datasets:
+    vitext2sql:
+        encoder: multilingual
+        format: vitext2sql
+        tables: dataset/vitext2sql/data/word-level/tables.json
+        dev:    dataset/vitext2sql/data/word-level/dev.json
+```
 
-Bảng gold suy ra bằng cách lấy **mọi bảng trong FROM/JOIN, kể cả trong subquery** —
-quy tắc này đã đối chiếu với `dataset/spider/dev.json` và khớp 658/658 câu. Suy từ
-hai nguồn rồi hợp lại, vì mỗi nguồn thiếu một kiểu: cây cú pháp `sql` của
-ViText2SQL **bỏ sót bảng thứ ba ở các câu JOIN 3 bảng** (44/954 câu của split dev),
-còn đọc token thì không thấy bảng nằm trong subquery ở mệnh đề FROM.
-
-**Mức tách từ.** ViText2SQL có hai bản: `syllable` để các âm tiết rời
-("kiến trúc sư") và `word` nối bằng gạch dưới ("kiến_trúc_sư"). Mức `word` dành
-cho model tiếng Việt có word segmentation (PhoBERT); với bi-encoder thông thường
-thì `syllable` là văn bản tự nhiên hơn nên đó là mặc định. Đổi bằng `--level word`.
-Hai mức có **cùng 876 schema**, nên nhìn file không phân biệt được — script ghi
-`dataset/vitext2sql/meta.json` để biết trên đĩa đang là mức nào, và cache
-embeddings mang vân tay nội dung corpus nên đổi mức là tự mã hoá lại chứ không
-dùng nhầm vector cũ.
+Trỏ `dev` sang `test.json` là đánh giá trên split test. Hai mức có **cùng 876
+schema** nên ghép nhầm `tables` mức này với `dev` mức kia sẽ không lộ ra ở số
+lượng — `adapt_split` bắt bằng cách đối chiếu `db_id` và báo lỗi rõ. Cache
+embeddings cũng mang vân tay nội dung corpus nên đổi mức là tự mã hoá lại chứ
+không dùng nhầm vector cũ.
 
 **Prompt Removal.** `prompts/vitext2sql_rewrite.txt` đã có sẵn trong repo, dựng từ
 split **train** (không phải dev — ví dụ trùng câu đang đo thì điểm đo được là điểm
@@ -329,12 +365,11 @@ của trí nhớ). Ví dụ là tiếng Việt nhưng phần khung giữ nguyên
 `Completing Tables:` và `None` chính là thứ `core/rewriter.py` dò để biết một nhánh
 đã đủ bảng, dịch nhãn đi là Early Stop không bao giờ khớp.
 
-Dựng lại bằng `--emit-prompt` (phải tải thêm ~27MB split train). Cần làm việc đó
-khi chuyển sang `--level word`: prompt đang commit dùng ví dụ mức syllable, để lẫn
-thì ví dụ trong prompt viết khác hẳn schema thật mà model đang nhìn.
+Chuyển sang `word-level` thì dựng lại prompt, kẻo ví dụ trong prompt viết khác hẳn
+schema thật mà model đang nhìn:
 
 ```bash
-python scripts/prepare_vitext2sql.py --level word --emit-prompt
+python scripts/build_vitext2sql_prompt.py --level word
 ```
 
 ---
@@ -345,7 +380,8 @@ python scripts/prepare_vitext2sql.py --level word --emit-prompt
 config.yaml               toàn bộ cấu hình, mọi dataset
 
 scripts/
-└── prepare_vitext2sql.py ViText2SQL (tiếng Việt) → định dạng dataset của MURRE
+├── download_vitext2sql.py     tải ViText2SQL về, giữ nguyên xi dữ liệu gốc
+└── build_vitext2sql_prompt.py dựng prompt Removal từ split train
 
 src/
 ├── cli.py            điểm vào CLI (ask / run / embed / config)

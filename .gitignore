@@ -9,4 +9,4 @@ outputs/
 .vscode/
 *.log
 
-dataset/vitext2sql/
+dataset/vitext2sql/data/

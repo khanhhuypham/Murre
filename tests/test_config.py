@@ -75,11 +75,21 @@ def test_output_path_model_label_follows_the_dataset_encoder() -> None:
     assert "e5" in cfg.outputs.for_run(dataset="vitext2sql").result()
 
 
-def test_dataset_paths_follow_the_naming_convention() -> None:
-    """Khai mỗi `encoder:` trong config.yaml, ba đường dẫn tự suy ra."""
+def test_murre_dataset_paths_follow_the_naming_convention() -> None:
+    """Dataset dạng `murre` (spider, bird): ba đường dẫn tự suy ra theo tên."""
+    d = cfg.dataset_config("spider")
+    assert d.format == "murre"
+    assert d.tables == "dataset/spider/tables.json"
+    assert d.dev == "dataset/spider/dev.json"
+    assert d.prompt == "prompts/spider_rewrite.txt"
+
+
+def test_raw_dataset_paths_point_into_the_untouched_tree() -> None:
+    """Dataset dạng `vitext2sql`: trỏ thẳng vào bản sao nguyên xi của upstream."""
     d = cfg.dataset_config("vitext2sql")
-    assert d.tables == "dataset/vitext2sql/tables.json"
-    assert d.dev == "dataset/vitext2sql/dev.json"
+    assert d.format == "vitext2sql"
+    assert d.tables == "dataset/vitext2sql/data/syllable-level/tables.json"
+    assert d.dev == "dataset/vitext2sql/data/syllable-level/dev.json"
     assert d.prompt == "prompts/vitext2sql_rewrite.txt"
 
 

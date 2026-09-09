@@ -92,10 +92,21 @@ datasets:
         encoder: sgpt
     bird:
         encoder: sgpt
-    # Dữ liệu không đi kèm repo — dựng bằng:
-    #   python scripts/prepare_vitext2sql.py
+
+    # Tiếng Việt. Dữ liệu không đi kèm repo, tải bằng:
+    #   python scripts/download_vitext2sql.py
+    #
+    # `format: vitext2sql` = file trên đĩa GIỮ NGUYÊN XI bản gốc của VinAI (thiếu
+    # khoá `schema`, `utterance`, `rel_schema` mà MURRE cần). Phần thích nghi chạy
+    # lúc đọc, ở dataset/vitext2sql.py — nhờ vậy dữ liệu vẫn đối chiếu được với
+    # upstream: python scripts/download_vitext2sql.py --verify
     vitext2sql:
         encoder: multilingual
+        format: vitext2sql
+        # Mặc định là syllable-level + split dev. Đổi sang mức word hoặc sang split
+        # test thì trỏ thẳng vào file — cây thư mục sao y upstream:
+        #   tables: dataset/vitext2sql/data/word-level/tables.json
+        #   dev:    dataset/vitext2sql/data/word-level/dev.json
 
 # -----------------------------------------------------------------------------
 # THAM SỐ PIPELINE (§4.1 của paper)

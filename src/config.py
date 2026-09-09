@@ -154,15 +154,28 @@ class DatasetConfig(BaseModel):
     """
 
     encoder: str                        # tên một profile trong `encoders`
+    # Định dạng file TRÊN ĐĨA — dataset/loader.py rẽ theo khoá này:
+    #   murre       đã tiền xử lý sẵn (tables.json có `schema`, dev.json có
+    #               `utterance` + `rel_schema`) → đọc thẳng.
+    #   vitext2sql  THÔ, giữ nguyên xi upstream → thích nghi lúc đọc.
+    format: str = "murre"
     tables: Optional[str] = None        # schema của mọi database
-    dev: Optional[str] = None           # câu hỏi + bảng gold (rel_schema)
+    dev: Optional[str] = None           # split đánh giá
     prompt: Optional[str] = None        # prompt few-shot của pha Removal
 
     def with_defaults(self, name: str) -> "DatasetConfig":
-        """Điền đường dẫn còn trống theo quy ước thư mục của project."""
+        """Điền đường dẫn còn trống theo quy ước thư mục của từng định dạng."""
+        if self.format == "vitext2sql":
+            # Cây thư mục sao y upstream: dataset/vitext2sql/data/<mức>-level/.
+            # Đổi sang word-level hay sang split test thì khai thẳng tables/dev.
+            base: str = f"dataset/{name}/data/syllable-level"
+            tables, dev = f"{base}/tables.json", f"{base}/dev.json"
+        else:
+            tables, dev = f"dataset/{name}/tables.json", f"dataset/{name}/dev.json"
+
         return self.model_copy(update={
-            "tables": self.tables or f"dataset/{name}/tables.json",
-            "dev": self.dev or f"dataset/{name}/dev.json",
+            "tables": self.tables or tables,
+            "dev": self.dev or dev,
             "prompt": self.prompt or f"prompts/{name}_rewrite.txt",
         })
 
@@ -176,7 +189,9 @@ class DatasetsConfig(BaseModel):
     # trong repo. Bắt buộc encoder đa ngữ: SGPT chỉ học tiếng Anh, dùng nó cho
     # tiếng Việt thì recall gần như ngẫu nhiên (5.6 so với 82.2 ở r@5).
     vitext2sql: DatasetConfig = Field(
-        default_factory=lambda: DatasetConfig(encoder="multilingual")
+        default_factory=lambda: DatasetConfig(
+            encoder="multilingual", format="vitext2sql",
+        )
     )
 
     @model_validator(mode="after")
