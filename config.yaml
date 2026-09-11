@@ -25,8 +25,8 @@ general:
 # -----------------------------------------------------------------------------
 # ENCODER — khai theo profile, mỗi dataset trỏ tới một profile
 #
-# `type` quyết định cách gộp token và cách phân biệt query/document:
-#   sgpt     : SPECB "[ ]" / "{ }" + weighted-mean pooling (đúng bản của paper)
+# `type` quyết định cách gộp token và cách phân biệt query/document. Hiện chỉ có
+# một giá trị:
 #   sentence : mean pooling + tiền tố văn bản (BERT/XLM-R, sentence-transformers)
 #
 # Nhãn thư mục outputs/ suy ra từ `model_name`, nên hai profile khác model thì kết
@@ -34,14 +34,22 @@ general:
 # -----------------------------------------------------------------------------
 encoders:
 
-    # Cho tiếng Anh (spider, bird) — đúng model của paper.
-    # Các cỡ khác, tăng dần chất lượng/RAM:
-    #   Muennighoff/SGPT-1.3B-weightedmean-msmarco-specb-bitfit  (~5GB)
-    #   Muennighoff/SGPT-2.7B-weightedmean-msmarco-specb-bitfit  (~11GB)
-    #   Muennighoff/SGPT-5.8B-weightedmean-msmarco-specb-bitfit  (~23GB)
-    sgpt:
-        type: sgpt
-        model_name: Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit
+    # MỘT encoder cho cả ba dataset: model đa ngữ nên dùng được cho cả tiếng Anh
+    # (spider, bird) và tiếng Việt (vitext2sql).
+    #
+    # Vì sao không còn SGPT của paper: nó chỉ học tiếng Anh. Đo trên chính corpus
+    # ViText2SQL (954 câu, 876 schema, chỉ hop 1 nên không có LLM xen vào):
+    #                          r@3    r@5   r@10   r@20
+    #   SGPT-125M              4.0    5.6   10.2   16.6   ← gần như ngẫu nhiên
+    #   multilingual-e5-base  73.4   82.2   90.7   94.6
+    #
+    # BPE tiếng Anh của SGPT băm mỗi schema tiếng Việt ra 82 token (bản tiếng Anh
+    # chỉ 24) nên vector gần như vô nghĩa.
+    #
+    # Cỡ khác: intfloat/multilingual-e5-small (~470MB), -large (~2.2GB).
+    multilingual:
+        type: sentence
+        model_name: intfloat/multilingual-e5-base
 
         # TRẦN số văn bản mã hoá song song. Chỉ là trần: batch thật còn bị cắt theo
         # max_batch_tokens, nên để 256 cũng không tràn bộ nhớ.
@@ -59,23 +67,9 @@ encoders:
         # Giảm nếu máy ít RAM; tăng nếu có GPU rộng rãi và muốn nhanh hơn.
         max_batch_tokens: 16384
 
-    # Cho tiếng Việt (vitext2sql). BẮT BUỘC là model đa ngữ.
-    #
-    # Đo trên chính corpus ViText2SQL (954 câu, 876 schema, chỉ hop 1):
-    #                          r@3    r@5   r@10   r@20
-    #   SGPT-125M              4.0    5.6   10.2   16.6   ← gần như ngẫu nhiên
-    #   multilingual-e5-base  73.4   82.2   90.7   94.6
-    #
-    # SGPT chỉ học tiếng Anh: BPE của nó băm mỗi schema tiếng Việt ra 82 token
-    # (bản tiếng Anh chỉ 24) nên vector gần như vô nghĩa.
-    #
-    # Cỡ khác: intfloat/multilingual-e5-small (~470MB), -large (~2.2GB).
-    multilingual:
-        type: sentence
-        model_name: intfloat/multilingual-e5-base
-        batch_size: 256
-        max_batch_tokens: 16384
+        # Cắt bớt chuỗi quá dài, theo token của tokenizer của chính model.
         max_length: 512
+
         # Hai tiền tố này BẮT BUỘC với họ E5 — model được huấn luyện với đúng chúng,
         # bỏ đi là điểm tụt hẳn. Model khác (bge-m3, ...) thì để trống.
         query_prefix: "query: "
@@ -89,17 +83,18 @@ encoders:
 # -----------------------------------------------------------------------------
 datasets:
     spider:
-        encoder: sgpt
+        encoder: multilingual
     bird:
-        encoder: sgpt
+        encoder: multilingual
 
-    # Tiếng Việt. Dữ liệu không đi kèm repo, tải bằng:
-    #   python scripts/download_vitext2sql.py
+    # Tiếng Việt. Dữ liệu KHÔNG đi kèm repo và không có script tải — lấy bằng tay
+    # từ https://github.com/VinAIResearch/ViText2SQL/tree/master/data rồi đặt vào
+    # dataset/vitext2sql/data/<mức>-level/ (xem README mục 7b).
     #
     # `format: vitext2sql` = file trên đĩa GIỮ NGUYÊN XI bản gốc của VinAI (thiếu
     # khoá `schema`, `utterance`, `rel_schema` mà MURRE cần). Phần thích nghi chạy
-    # lúc đọc, ở dataset/vitext2sql.py — nhờ vậy dữ liệu vẫn đối chiếu được với
-    # upstream: python scripts/download_vitext2sql.py --verify
+    # lúc đọc, ở dataset/vitext2sql.py — nhờ vậy file trên đĩa vẫn so được với
+    # upstream từng byte, không ai sửa nó.
     vitext2sql:
         encoder: multilingual
         format: vitext2sql
@@ -145,13 +140,14 @@ llm:
 
         openai-gpt-4o-mini:
             model_name: gpt-4o-mini
-            api_key: ""                   # để trống, điền qua .env: OPENAI_API_KEY
+            api_key: ""                   # điền qua .env: OPENAI_API_KEY (mặc định của api_key_env)
             base_url: ""                  # để trống → endpoint OpenAI mặc định
             temperature: 0.0
 
         groq-llama-3.1-8b:
             model_name: llama-3.1-8b-instant
-            api_key: ""                   # điền qua .env: OPENAI_API_KEY (key của Groq)
+            api_key: ""
+            api_key_env: GROQ_API_KEY  # biến .env riêng cho endpoint này
             base_url: "https://api.groq.com/openai/v1"
             temperature: 0.0
 
@@ -163,8 +159,8 @@ api:
     port: 8000
 
     # Dataset service phục vụ. Rỗng = mọi dataset có tables.json trên đĩa.
-    # Mỗi dataset nạp encoder của nó, nên khai càng nhiều thì khởi động càng lâu và
-    # càng tốn RAM (SGPT ~500MB + multilingual-e5-base ~1.1GB).
+    # Cả ba dùng chung một profile encoder nên model chỉ nạp MỘT lần (~1.1GB cho
+    # multilingual-e5-base); phần thêm mỗi dataset là corpus + embeddings của nó.
     datasets: [spider, bird, vitext2sql]
 
     # true  → nạp encoder/LLM/embeddings và ping LLM TRƯỚC khi nhận request; thiếu

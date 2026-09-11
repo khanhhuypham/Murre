@@ -35,20 +35,12 @@ class LLMGenerator:
         self.default_temperature: float = profile_cfg.temperature
         self.connect_timeout: float = profile_cfg.connect_timeout
         self.base_url: Optional[str] = profile_cfg.base_url or None
-        self.is_local: bool = bool(self.base_url) and (
-            "localhost" in self.base_url or "127.0.0.1" in self.base_url
-        )
+        self.is_local: bool = profile_cfg.is_local
 
-        # SDK OpenAI đòi api_key non-empty; Ollama không kiểm nên đưa giá trị giả.
-        api_key: str = profile_cfg.api_key
-        if not api_key:
-            if not self.is_local:
-                raise ValueError(
-                    f"Profile LLM '{self.model_name}' chưa có api_key và không phải local!\n"
-                    "  1. Tạo file .env, thêm: OPENAI_API_KEY=sk-...\n"
-                    "  2. Hoặc đổi llm.active_profile trong config.yaml sang profile local (Ollama)."
-                )
-            api_key = "ollama"
+        # Profile tự trả lời "dùng được chưa" — xem
+        # LLMProfileConfig.resolve_api_key(). Thiếu khóa mà profile đang active
+        # thì đã nổ từ lúc nạp config.yaml, không tới được đây.
+        api_key: str = profile_cfg.resolve_api_key()
 
         # Timeout PHẢI đặt tay: mặc định của SDK là connect 5s + read 600s, nhân thêm
         # max_retries → đợi rất lâu mới biết endpoint chưa bật.

@@ -51,7 +51,7 @@ def evaluate_run(dataset: Dataset | str, model: str, k: int) -> EvalResult:
         ) from None
 
     # Chuẩn hoá qua đúng hàm sinh nhãn, nên gõ cả tên HuggingFace đầy đủ
-    # ("Muennighoff/SGPT-125M-...") hay gõ sẵn nhãn đều ra cùng một thư mục.
+    # ("intfloat/multilingual-e5-base") hay gõ sẵn nhãn đều ra cùng một thư mục.
     # Sai tên thì rơi vào nhánh 404 bên dưới, ở đó in ra các nhãn có thật trên đĩa.
     slug: str = model_slug(name=str(model))
 

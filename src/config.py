@@ -9,12 +9,12 @@ Section nào có trong config.yaml thì ghi đè mặc định tương ứng —
 
     cfg.dataset_paths.tables            # dataset/spider/tables.json
     cfg.encoder_for("vitext2sql")       # profile encoder của dataset tiếng Việt
-    cfg.outputs.result()                # outputs/spider/sgpt-125m-.../turn3/dev.json
-    cfg.outputs.sql(k=5)                # outputs/spider/sgpt-125m-.../turn3/sql.5.txt
+    cfg.outputs.result()                # outputs/spider/multilingual-e5-base/turn3/dev.json
+    cfg.outputs.sql(k=5)                # outputs/spider/multilingual-e5-base/turn3/sql.5.txt
 
 MỖI DATASET KHAI ENCODER RIÊNG (`datasets.<ds>.encoder` → một khoá trong
-`encoders`). Encoder gắn với ngôn ngữ của dataset, nên đổi dataset là encoder tự
-đi theo — không cần file config thứ hai, không cần biến môi trường.
+`encoders`), nên đổi dataset là encoder tự đi theo — không cần file config thứ
+hai, không cần biến môi trường.
 
 Chỉ BÍ MẬT mới đi qua .env, vì config.yaml nằm trong git:
     OPENAI_API_KEY, OPENAI_BASE_URL   (ghi đè profile LLM đang active)
@@ -29,11 +29,18 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationError,
+    model_validator,
+)
 
 # Mọi đường dẫn trong config đều tương đối so với gốc project, nên chdir về gốc
 # ngay khi import → chạy từ đâu cũng đúng (PyCharm, terminal trong src/core/...).
@@ -56,8 +63,7 @@ load_dotenv()
 def model_slug(name: str) -> str:
     """Tên model → nhãn thư mục an toàn cho đường dẫn.
 
-        Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit
-        → sgpt-125m-weightedmean-msmarco-specb-bitfit
+        intfloat/multilingual-e5-base  →  multilingual-e5-base
 
     Bỏ phần org trước "/", hạ chữ thường, ký tự lạ đổi thành "-". Nhờ vậy đổi
     model_name của encoder là outputs/ tự tách theo model, không cần khai thêm
@@ -81,21 +87,23 @@ class EncoderProfileConfig(BaseModel):
 
     model_name: str
     # Họ encoder — quyết định cách gộp token và cách phân biệt query/document.
-    #   sgpt     : SGPT của paper (SPECB + weighted-mean). Chỉ dùng cho tiếng Anh.
-    #   sentence : bi-encoder BERT/XLM-R (mean pooling + tiền tố). Bắt buộc cho
-    #              corpus tiếng Việt — xem docstring core/encoder.py.
-    type: str = "sgpt"
+    #   sentence : bi-encoder BERT/XLM-R (mean pooling + tiền tố).
+    #
+    # Literal chứ không phải str: nhánh này chỉ còn MỘT họ encoder, nên việc duy
+    # nhất field này còn làm là TỪ CHỐI cấu hình của bản cũ. `type: sgpt` phải nổ
+    # lỗi ngay lúc nạp config.yaml — chứ không được lặng lẽ rơi về encoder này rồi
+    # chạy xong cả lượt mới đoán mình đã dùng model nào.
+    type: Literal["sentence"] = "sentence"
     batch_size: int = 256
     # Trần TOKEN cho một batch (số câu × độ dài câu dài nhất). Đây mới là thứ chặn
     # tràn bộ nhớ; `batch_size` chỉ đếm số câu nên không thấy được câu dài. Xem
     # core/encoder.py::plan_batches — schema dài 598 token với batch 256 từng làm
     # torch nổ ACCESS_VIOLATION trên máy 16 GB.
     max_batch_tokens: int = 16384
-    # Cắt bớt chuỗi quá dài. Chỉ `sentence` dùng; SGPT theo đúng bản gốc, cắt theo
-    # giới hạn của chính model.
+    # Cắt bớt chuỗi quá dài, tính bằng token của tokenizer của chính model.
     max_length: int = 512
-    # Tiền tố theo vai trò, chỉ `sentence` dùng. E5 được huấn luyện với
-    # "query: " / "passage: "; bỏ đi là điểm tụt hẳn.
+    # Tiền tố theo vai trò. E5 được huấn luyện với "query: " / "passage: "; bỏ đi
+    # là điểm tụt hẳn. Model không đòi tiền tố (bge-m3, ...) thì để trống.
     query_prefix: str = ""
     doc_prefix: str = ""
 
@@ -106,12 +114,22 @@ class EncoderProfileConfig(BaseModel):
 
 
 class LLMProfileConfig(BaseModel):
-    """Một model/endpoint LLM (OpenAI, Groq, Ollama...) khai trong llm.profiles."""
+    """Một model/endpoint LLM (OpenAI, Groq, Ollama...) khai trong llm.profiles.
+
+    Profile tự trả lời được câu "dùng được chưa" (resolve_api_key) và "có phải
+    endpoint local không" (is_local). Trước đây hai câu đó nằm trong
+    core/llm.py, nên mỗi chỗ gọi lại phải tự suy ra một lần.
+    """
 
     model_config = ConfigDict(protected_namespaces=())
 
     model_name: str
-    api_key: str = ""  # trống → điền qua .env: OPENAI_API_KEY
+    api_key: str = ""  # trống → lấy từ biến môi trường `api_key_env`
+    # Tên biến môi trường chứa khóa của RIÊNG profile này. Mỗi profile khai một
+    # tên khác nhau được (GROQ_API_KEY, TOGETHER_API_KEY...) — trước đây chỉ có
+    # đúng một biến OPENAI_API_KEY và nó chỉ áp cho profile đang active, nên
+    # `--llm-profile <tên khác>` báo thiếu khóa dù .env đã có.
+    api_key_env: str = "OPENAI_API_KEY"
     base_url: str = ""  # trống → endpoint OpenAI mặc định
     temperature: float = 0.0
 
@@ -119,10 +137,64 @@ class LLMProfileConfig(BaseModel):
     timeout: float = 120.0
     max_retries: int = 1  # 0 = không thử lại; lỗi kết nối thử lại cũng vô ích
 
+    # Điền bởi LLMConfig._name_profiles. Profile nằm trong Dict nên tự nó không
+    # biết mình tên gì, mà mọi thông báo lỗi đều phải nói rõ đang nói profile nào.
+    _name: str = PrivateAttr(default="")
+
+    @property
+    def name(self) -> str:
+        return self._name or "?"
+
+    @property
+    def is_local(self) -> bool:
+        """Endpoint chạy ngay trên máy này (Ollama, llama.cpp, ...).
+
+        Suy từ base_url chứ không khai riêng: một cờ khai tay sẽ lệch với
+        base_url mà không ai phát hiện.
+        """
+        return bool(self.base_url) and (
+            "localhost" in self.base_url or "127.0.0.1" in self.base_url
+        )
+
+    def resolve_api_key(self) -> str:
+        """Khóa để đưa cho SDK — CHỖ DUY NHẤT trả lời "profile này dùng được chưa".
+
+        Thứ tự: biến môi trường `api_key_env` → `api_key` trong config.yaml →
+        giá trị giả cho endpoint local. Biến môi trường đứng trước vì config.yaml
+        nằm trong git: khóa thật phải ở .env, giá trị trong file chỉ là chỗ giữ.
+
+        Endpoint local không kiểm khóa, nhưng SDK OpenAI đòi chuỗi non-empty nên
+        vẫn phải đưa cho nó một giá trị.
+        """
+        from_env: str = os.getenv(self.api_key_env, "")
+        if from_env:
+            return from_env
+        if self.api_key:
+            return self.api_key
+        if self.is_local:
+            return "ollama"
+
+        raise ValueError(
+            f"Profile LLM '{self.name}' (model '{self.model_name}') "
+            f"chưa có api_key và không phải endpoint local.\n"
+            f"  1. Thêm vào .env:  {self.api_key_env}=sk-...\n"
+            f"  2. Hoặc đổi llm.active_profile trong config.yaml sang profile "
+            f"local (base_url trỏ localhost).\n"
+            f"  Lưu ý: mỗi profile đọc biến môi trường riêng — profile này đọc "
+            f"{self.api_key_env}, khai ở `api_key_env`."
+        )
+
 
 class LLMConfig(BaseModel):
     active_profile: str
     profiles: Dict[str, LLMProfileConfig]
+
+    @model_validator(mode="after")
+    def _name_profiles(self) -> "LLMConfig":
+        """Gắn tên vào từng profile (xem LLMProfileConfig._name)."""
+        for name, profile in self.profiles.items():
+            profile._name = name
+        return self
 
 
 class PipelineConfig(BaseModel):
@@ -144,10 +216,10 @@ class PipelineConfig(BaseModel):
 class DatasetConfig(BaseModel):
     """Mọi thứ riêng của MỘT dataset: dữ liệu đầu vào + encoder dùng cho nó.
 
-    `encoder` trỏ tới một khoá trong `encoders`. Encoder gắn với NGÔN NGỮ của
-    dataset (SGPT chỉ hiểu tiếng Anh), nên nó thuộc về dataset chứ không phải là
-    một giá trị toàn cục — khai ở đây thì đổi dataset là encoder tự đi theo, không
-    cần file config riêng hay biến môi trường nào.
+    `encoder` trỏ tới một khoá trong `encoders`. Khai ở đây chứ không để toàn cục
+    vì mỗi dataset được quyền dùng model riêng — đổi dataset là encoder tự đi theo,
+    không cần file config riêng hay biến môi trường nào. (Hiện cả ba dataset trỏ
+    cùng một profile đa ngữ, nhưng chỗ để tách ra vẫn còn sẵn.)
 
     Ba đường dẫn để trống thì DatasetsConfig tự điền theo quy ước, nên trong
     config.yaml chỉ cần khai đúng một dòng `encoder:`.
@@ -183,11 +255,15 @@ class DatasetConfig(BaseModel):
 class DatasetsConfig(BaseModel):
     """Khai báo từng dataset. Tên field phải khớp member của enum Dataset."""
 
-    spider: DatasetConfig = Field(default_factory=lambda: DatasetConfig(encoder="sgpt"))
-    bird: DatasetConfig = Field(default_factory=lambda: DatasetConfig(encoder="sgpt"))
-    # Tiếng Việt. Dữ liệu dựng bằng scripts/prepare_vitext2sql.py, không có sẵn
-    # trong repo. Bắt buộc encoder đa ngữ: SGPT chỉ học tiếng Anh, dùng nó cho
-    # tiếng Việt thì recall gần như ngẫu nhiên (5.6 so với 82.2 ở r@5).
+    spider: DatasetConfig = Field(
+        default_factory=lambda: DatasetConfig(encoder="multilingual")
+    )
+    bird: DatasetConfig = Field(
+        default_factory=lambda: DatasetConfig(encoder="multilingual")
+    )
+    # Tiếng Việt. Dữ liệu tải BẰNG TAY từ upstream (README mục 7b), không có sẵn
+    # trong repo. Encoder BẮT BUỘC đa ngữ: model chỉ học tiếng Anh cho recall gần
+    # như ngẫu nhiên trên corpus này (5.6 so với 82.2 ở r@5).
     vitext2sql: DatasetConfig = Field(
         default_factory=lambda: DatasetConfig(
             encoder="multilingual", format="vitext2sql",
@@ -225,13 +301,13 @@ class OutputPaths:
     placeholder bắt buộc (k) là tham số THẬT nên gõ thiếu là biết ngay lúc viết
     code, không phải KeyError lúc chạy.
 
-        cfg.outputs.result()               → outputs/spider/sgpt-125m-.../turn3/dev.json
-        cfg.outputs.sql(k=5)               → outputs/spider/sgpt-125m-.../turn3/sql.5.txt
+        cfg.outputs.result()               → outputs/spider/multilingual-e5-base/turn3/dev.json
+        cfg.outputs.sql(k=5)               → outputs/spider/multilingual-e5-base/turn3/sql.5.txt
 
     Cần đường dẫn của lần chạy KHÁC mà không ghi đè `cfg` toàn cục thì dùng for_run()
     — /evaluate làm đúng vậy:
 
-        cfg.outputs.for_run(dataset="bird", model="sgpt-1.3b-...").result()
+        cfg.outputs.for_run(dataset="bird", model="multilingual-e5-large").result()
     """
 
     def __init__(self, settings: "Settings", **overrides: Any) -> None:
@@ -299,10 +375,9 @@ class ApiConfig(BaseModel):
 
     # Dataset mà service này phục vụ. Rỗng = mọi dataset có tables.json trên đĩa.
     #
-    # Nên khai tường minh: cả service dùng CHUNG MỘT encoder, mà encoder thì gắn với
-    # ngôn ngữ (SGPT cho tiếng Anh, đa ngữ cho tiếng Việt). Để rỗng thì thêm dữ liệu
-    # tiếng Việt vào đĩa là service tiếng Anh cũng nạp nó lúc khởi động — mã hoá cả
-    # corpus bằng model không hiểu tiếng Việt, chậm mà lại vô dụng.
+    # Nên khai tường minh: mỗi dataset khai ở đây là thêm một corpus phải mã hoá
+    # lúc khởi động (BIRD mất vài phút trên CPU lần đầu, sau đó đã có cache .pt).
+    # Để rỗng thì thêm dữ liệu vào đĩa là service tự nạp theo mà không ai yêu cầu.
     datasets: List[str] = []
 
     # true  → nạp encoder/LLM/embeddings và ping LLM TRƯỚC khi nhận request; thiếu gì
@@ -398,23 +473,36 @@ class Settings(BaseModel):
 # ---------------------------------------------------------------------------
 # Nạp config
 # ---------------------------------------------------------------------------
-def _apply_env_overrides(settings: Settings) -> None:
-    """Cho .env ghi đè config.yaml ở 3 giá trị hay đổi theo máy.
+def _profile_or_raise(
+    profiles: Dict[str, LLMProfileConfig], name: str, source: str,
+) -> LLMProfileConfig:
+    """Profile mang tên `name`, không có thì nổ — MỘT thông báo cho mọi chỗ tra.
 
-    api_key/base_url chỉ ghi đè cho profile ĐANG ACTIVE — profile khác giữ nguyên.
+    `source` cho biết cái tên sai đến từ đâu (llm.active_profile trong
+    config.yaml, hay --llm-profile trên dòng lệnh) vì cách sửa khác nhau.
     """
-    name: str = settings.llm.active_profile
-    if name not in settings.llm.profiles:
+    if name not in profiles:
         raise ValueError(
-            f"llm.active_profile='{name}' không tồn tại trong config.yaml (llm.profiles).\n"
-            f"Các profile có sẵn: {list(settings.llm.profiles)}"
+            f"LLM profile '{name}' ({source}) không tồn tại trong config.yaml "
+            f"(llm.profiles).\n"
+            f"  Các profile có sẵn: {list(profiles)}"
         )
+    return profiles[name]
 
-    active: LLMProfileConfig = settings.llm.profiles[name]
 
-    api_key: str = os.getenv("OPENAI_API_KEY", "")
-    if api_key:
-        active.api_key = api_key
+def _apply_env_overrides(settings: Settings) -> None:
+    """Cho .env ghi đè base_url của profile ĐANG ACTIVE — profile khác giữ nguyên.
+
+    api_key KHÔNG còn ghi đè ở đây: LLMProfileConfig.resolve_api_key() tự đọc
+    biến môi trường của riêng profile lúc cần. Nhờ vậy profile không-active cũng
+    lấy được khóa từ .env, và khóa thật không bị chép vào object rồi lộ ra
+    /config.
+    """
+    active: LLMProfileConfig = _profile_or_raise(
+        profiles=settings.llm.profiles,
+        name=settings.llm.active_profile,
+        source="llm.active_profile",
+    )
 
     base_url: str = os.getenv("OPENAI_BASE_URL", "")
     if base_url:
@@ -423,6 +511,20 @@ def _apply_env_overrides(settings: Settings) -> None:
     # KHÔNG có override cho encoder: giờ mỗi dataset khai encoder riêng nên một biến
     # môi trường đơn lẻ không nói được là ghi đè cái nào. Đổi encoder thì sửa thẳng
     # `encoders` trong config.yaml.
+
+
+def _check_active_llm_profile(settings: Settings) -> None:
+    """Profile active phải DÙNG ĐƯỢC, kiểm ngay lúc nạp config.
+
+    Cùng lý do với việc kiểm `type` của encoder ở EncoderProfileConfig: thiếu
+    khóa mà để tới lúc dựng LLMGenerator mới biết thì API đã nạp xong encoder
+    (~1.1GB) và mã hóa cả corpus rồi mới đổ — mất vài phút cho một lỗi cấu hình
+    đọc được trong tích tắc.
+
+    CHỈ kiểm profile active: config.yaml khai sẵn một profile Groq chưa dùng tới
+    thì không có lý do gì chặn cả file.
+    """
+    settings.llm.profiles[settings.llm.active_profile].resolve_api_key()
 
 
 def config_path_from_argv(argv: Optional[List[str]] = None) -> Optional[str]:
@@ -497,10 +599,12 @@ def load_settings(config_path: Optional[Path] = None) -> Settings:
             f"config.yaml không hợp lệ ({path.resolve()}):\n{problems}\n\n"
             f"Khối `encoder:` và `llm:` bắt buộc phải có. Ví dụ tối thiểu:\n"
             f"  encoder:\n"
-            f"      model_name: Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit\n"
+            f"      model_name: intfloat/multilingual-e5-base\n"
         ) from None
 
     _apply_env_overrides(settings=settings)
+    # SAU override: base_url từ .env quyết định profile có phải local hay không.
+    _check_active_llm_profile(settings=settings)
     return settings
 
 
@@ -509,13 +613,11 @@ def get_llm_profile(profile_name: Optional[str] = None) -> LLMProfileConfig:
 
     Truyền profile_name để tạm dùng model local khác mà không sửa config.yaml.
     """
-    name: str = profile_name or cfg.llm.active_profile
-    if name not in cfg.llm.profiles:
-        raise ValueError(
-            f"LLM profile '{name}' không tồn tại trong config.yaml (llm.profiles).\n"
-            f"Các profile có sẵn: {list(cfg.llm.profiles)}"
-        )
-    return cfg.llm.profiles[name]
+    if profile_name is None:
+        return cfg.llm.profiles[cfg.llm.active_profile]
+    return _profile_or_raise(
+        profiles=cfg.llm.profiles, name=profile_name, source="--llm-profile",
+    )
 
 
 # Singleton — nạp một lần khi module được import lần đầu, dùng chung cả project.

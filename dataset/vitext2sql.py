@@ -12,10 +12,10 @@ Chỗ lệch nằm ở ba khoá:
 
 VÌ SAO THÍCH NGHI TRONG CODE, KHÔNG GHI ĐÈ FILE
 -----------------------------------------------
-File dưới dataset/vitext2sql/data/ là bản sao NGUYÊN XI của upstream, đối chiếu
-được từng byte bằng `python scripts/download_vitext2sql.py --verify`. Ghi đè
-chúng bằng bản đã đổi khoá là mất khả năng đó: không còn biết dữ liệu đang chạy
-có đúng dữ liệu gốc hay không, và tải lại là mất hết phần đã chuyển đổi.
+File dưới dataset/vitext2sql/data/ là bản sao NGUYÊN XI của upstream, so được
+từng byte với bản gốc của VinAI. Ghi đè chúng bằng bản đã đổi khoá là mất khả năng
+đó: không còn biết dữ liệu đang chạy có đúng dữ liệu gốc hay không, và tải lại
+(bằng tay) là mất hết phần đã chuyển đổi.
 
 Chi phí: mỗi lần đọc phải dựng lại `schema` và `rel_schema`. Đo trên split dev
 (954 câu, 166 database) là dưới một giây — không đáng kể so với việc mã hoá

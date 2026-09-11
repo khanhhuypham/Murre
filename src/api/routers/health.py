@@ -29,7 +29,8 @@ async def health(request: Request, response: Response) -> HealthStatus:
         datasets_available=available_datasets(),   # có tables.json trên đĩa
         datasets_loaded=list(state.datasets),      # đã nạp embeddings vào RAM
         encoders={
-            str(d): cfg.encoder_for(d).model_name for d in available_datasets()
+            str(d): cfg.encoder_for(dataset=d).model_name
+            for d in available_datasets()
         },
         llm=cfg.llm.profiles[cfg.llm.active_profile].model_name,
         beam_size=cfg.pipeline.beam_size,

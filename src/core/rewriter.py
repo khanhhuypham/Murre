@@ -70,10 +70,7 @@ class QueryRewriter:
         # `Database:` nằm trên MỘT dòng. Sửa " \\n " thành " \n " là prompt vỡ ngay.
         database_field: str = " \\n ".join(retrieved_schemas)
 
-        prompt: str = self.prompt_template.format(
-            question=question,
-            database=database_field,
-        )
+        prompt: str = self.prompt_template.format(question=question, database=database_field)
         raw_output: str = self.llm.generate(
             prompt=prompt,
             stop=self._STOP_SEQUENCES,

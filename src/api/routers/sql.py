@@ -25,20 +25,31 @@ async def generate_sql(payload: SqlRequest, request: Request) -> SqlResponse:
     if not payload.question.strip():
         raise AppError.bad_request(message="Câu hỏi không được để trống.")
 
-    require_dataset(payload.dataset)
+    require_dataset(ds_name=payload.dataset)
     state = request.app.state
-    ds: LoadedDataset = await load_dataset_once(state, payload.dataset)
+    ds: LoadedDataset = await load_dataset_once(
+        state=state,
+        ds_name=payload.dataset,
+    )
 
     # Cả retrieve lẫn gọi LLM đều blocking → đẩy sang thread để không chẹn event loop.
+    # to_thread() chuyển tiếp nguyên keyword argument xuống hàm được gọi.
     tables: List[RetrievedTable] = await asyncio.to_thread(
-        ds.retriever.run, payload.question, ds.corpus, ds.embs,
+        ds.retriever.run,
+        question=payload.question,
+        corpus=ds.corpus,
+        schema_embeddings=ds.embs,
     )
     if not tables:
         raise AppError.conflict(message="Không tìm được bảng nào cho câu hỏi này.")
 
     schemas: List[str] = [t.schema for t in tables[: payload.top_k]]
     sql: str = await asyncio.to_thread(
-        build_sql, state.llm, payload.question, schemas, payload.dataset,
+        build_sql,
+        llm=state.llm,
+        question=payload.question,
+        schemas=schemas,
+        dataset=payload.dataset,
     )
 
     return SqlResponse(question=payload.question, sql=sql, tables=schemas)

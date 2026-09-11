@@ -40,7 +40,7 @@ class AppError(Exception):
     @classmethod
     def bad_request(
         cls, cause: Optional[BaseException] = None, message: Optional[str] = None
-    ) -> "AppError":
+    ) -> AppError:
         return cls(message or "Yêu cầu không hợp lệ", 400, cause)
 
     @classmethod

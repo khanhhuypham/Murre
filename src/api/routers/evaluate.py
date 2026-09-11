@@ -41,8 +41,11 @@ async def evaluate(
 
     Không có kết quả cho tổ hợp đó → `404` kèm lệnh cần chạy trước.
     """
-    slug: str = model or cfg.encoder_for(dataset).slug
-    return [await asyncio.to_thread(evaluate_run, dataset, slug, kk) for kk in k]
+    slug: str = model or cfg.encoder_for(dataset=dataset).slug
+    return [
+        await asyncio.to_thread(evaluate_run, dataset=dataset, model=slug, k=kk)
+        for kk in k
+    ]
 
 
 @router.get(

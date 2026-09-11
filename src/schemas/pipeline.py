@@ -18,7 +18,8 @@ class PipelineRunRequest(BaseModel):
 
     KHÔNG có `model`: encoder do server quyết định, lấy từ encoder.model_name trong
     config.yaml. Lý do: model phải khớp với cache embeddings đã có sẵn trên máy chủ,
-    để client tự chọn thì dễ sinh ra lần chạy phải tải model mới (SGPT-5.8B ~23GB).
+    để client tự chọn thì dễ sinh ra lần chạy phải tải model mới (multilingual-e5-
+    large ~2.2GB) rồi mã hoá lại cả corpus.
     """
 
     # extra="forbid": client cũ còn gửi "method"/"model" sẽ nhận 422 kèm tên field

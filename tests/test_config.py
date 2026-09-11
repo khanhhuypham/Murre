@@ -3,14 +3,15 @@ from __future__ import annotations
 
 import pytest
 
-from config import cfg, model_slug
+from pydantic import ValidationError
+
+from config import EncoderProfileConfig, LLMProfileConfig, cfg, model_slug
 
 
 @pytest.mark.parametrize(
     "name, expected",
     [
-        ("Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit",
-         "sgpt-125m-weightedmean-msmarco-specb-bitfit"),
+        ("intfloat/multilingual-E5-Base", "multilingual-e5-base"),
         ("gpt-3.5-turbo", "gpt-3.5-turbo"),
         ("org/Model Name!", "model-name"),
         ("", "unknown"),
@@ -51,15 +52,36 @@ def test_unknown_dataset_lists_the_known_ones() -> None:
         cfg.dataset_config("mysql")
 
 
+@pytest.mark.parametrize("bad_type", ["sgpt", "phobert", ""])
+def test_config_rejects_any_encoder_type_but_sentence(bad_type: str) -> None:
+    """`sgpt` nằm trong danh sách này: config.yaml của bản cũ phải nổ lỗi.
+
+    Lớp SGPTEncoder đã bỏ khỏi nhánh này. Nếu `type: sgpt` bị bỏ qua âm thầm và
+    rơi về encoder duy nhất còn lại thì chạy xong cả lượt vẫn không ai biết mình
+    đã dùng model nào. Nổ ngay lúc nạp config.yaml, trước khi tải model.
+    """
+    with pytest.raises(ValidationError, match="sentence"):
+        EncoderProfileConfig(model_name="intfloat/multilingual-e5-base", type=bad_type)
+
+
+def test_encoder_type_defaults_to_sentence() -> None:
+    """Khai thiếu `type` thì vẫn chạy — chỉ khai SAI mới bị chặn."""
+    assert EncoderProfileConfig(model_name="intfloat/multilingual-e5-base").type == "sentence"
+
+
 def test_each_dataset_resolves_its_own_encoder() -> None:
     """Cốt lõi của việc gộp hai config làm một: encoder đi theo dataset."""
-    assert cfg.encoder_for("spider").type == "sgpt"
-    assert cfg.encoder_for("vitext2sql").type == "sentence"
+    for ds in ("spider", "bird", "vitext2sql"):
+        assert cfg.encoder_for(ds).type == "sentence"
+        assert cfg.encoder_for(ds).model_name
 
 
-def test_vietnamese_dataset_uses_a_multilingual_model() -> None:
-    """SGPT cho tiếng Việt ra recall gần như ngẫu nhiên — chốt lại bằng test."""
-    assert "multilingual" in cfg.encoder_for("vitext2sql").model_name
+def test_every_dataset_uses_a_multilingual_model() -> None:
+    """Model chỉ học tiếng Anh cho recall gần như ngẫu nhiên trên corpus tiếng Việt
+    (5.6 so với 82.2 ở r@5) — chốt lại bằng test, kể cả với dataset tiếng Anh vì
+    cả ba đang dùng chung một profile."""
+    for ds in ("spider", "bird", "vitext2sql"):
+        assert "multilingual" in cfg.encoder_for(ds).model_name
 
 
 def test_e5_prefixes_are_configured() -> None:
@@ -69,10 +91,13 @@ def test_e5_prefixes_are_configured() -> None:
     assert profile.doc_prefix == "passage: "
 
 
-def test_output_path_model_label_follows_the_dataset_encoder() -> None:
-    """Hai dataset dùng encoder khác nhau thì kết quả không được ghi đè nhau."""
-    assert "sgpt" in cfg.outputs.for_run(dataset="spider").result()
-    assert "e5" in cfg.outputs.for_run(dataset="vitext2sql").result()
+def test_output_path_carries_both_dataset_and_model() -> None:
+    """Cùng một encoder cho mọi dataset, nên TÊN DATASET là thứ tách kết quả ra."""
+    spider = cfg.outputs.for_run(dataset="spider").result()
+    vitext = cfg.outputs.for_run(dataset="vitext2sql").result()
+
+    assert "e5" in spider and "e5" in vitext
+    assert spider != vitext
 
 
 def test_murre_dataset_paths_follow_the_naming_convention() -> None:
@@ -101,3 +126,56 @@ def test_a_dataset_pointing_at_a_missing_encoder_fails_loudly() -> None:
             cfg.encoder_for("spider")
     finally:
         cfg.datasets.spider.encoder = saved
+
+
+# --- LLM profile: khóa API ---------------------------------------------------
+def _profile(name: str, **kw: object) -> LLMProfileConfig:
+    """Profile rời, có đặt tên — tên là thứ mọi thông báo lỗi phải nói rõ."""
+    p = LLMProfileConfig(model_name="gpt-4o", **kw)
+    p._name = name
+    return p
+
+
+def test_each_profile_reads_its_own_env_var(monkeypatch) -> None:
+    """Điểm chính của `api_key_env`: hai profile, hai biến môi trường khác nhau.
+
+    Trước đây chỉ có một biến OPENAI_API_KEY và nó CHỈ áp cho profile đang
+    active, nên `--llm-profile <tên khác>` báo thiếu khóa dù .env đã có.
+    """
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-groq")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+
+    groq = _profile("groq", api_key_env="GROQ_API_KEY")
+    openai = _profile("openai")          # mặc định OPENAI_API_KEY
+
+    assert groq.resolve_api_key() == "gsk-groq"
+    assert openai.resolve_api_key() == "sk-openai"
+
+
+def test_env_wins_over_config_yaml(monkeypatch) -> None:
+    """config.yaml nằm trong git nên khóa thật ở .env — .env phải thắng."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-tu-env")
+    assert _profile("p", api_key="sk-trong-file").resolve_api_key() == "sk-tu-env"
+
+
+def test_local_profile_needs_no_key(monkeypatch) -> None:
+    """Ollama không kiểm khóa, nhưng SDK OpenAI đòi chuỗi non-empty."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    local = _profile("ollama", base_url="http://localhost:11434/v1")
+
+    assert local.is_local
+    assert local.resolve_api_key() == "ollama"
+
+
+def test_missing_key_names_the_right_env_var(monkeypatch) -> None:
+    """Thông báo phải chỉ đúng biến CỦA PROFILE ĐÓ, không phải OPENAI_API_KEY.
+
+    Báo sai tên biến là người dùng đi điền đúng biến rồi vẫn thấy báo thiếu.
+    """
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    groq = _profile("groq", api_key_env="GROQ_API_KEY",
+                    base_url="https://api.groq.com/openai/v1")
+
+    with pytest.raises(ValueError, match="GROQ_API_KEY") as exc:
+        groq.resolve_api_key()
+    assert "groq" in str(exc.value)

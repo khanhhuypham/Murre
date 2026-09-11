@@ -3,8 +3,8 @@
     python scripts/build_vitext2sql_prompt.py                    # từ syllable-level
     python scripts/build_vitext2sql_prompt.py --level word       # từ word-level
 
-Đọc split TRAIN của ViText2SQL (bản THÔ đã tải bằng scripts/download_vitext2sql.py)
-rồi ghi ra prompts/vitext2sql_rewrite.txt. KHÔNG sửa gì trong dataset/.
+Đọc split TRAIN của ViText2SQL (bản THÔ tải bằng tay, xem README mục 7b) rồi ghi
+ra prompts/vitext2sql_rewrite.txt. KHÔNG sửa gì trong dataset/.
 
 File prompt đã có sẵn trong repo, nên chỉ cần chạy lại khi đổi mức tách từ: prompt
 đang commit dùng ví dụ mức syllable, chạy word-level mà để nguyên thì ví dụ trong
@@ -31,7 +31,7 @@ def _read(path: str) -> Any:
     if not os.path.exists(path):
         raise SystemExit(
             f"Không thấy {path}.\n"
-            f"  Tải dữ liệu trước: python scripts/download_vitext2sql.py"
+            f"  Tải dữ liệu về trước bằng tay (xem README mục 7b)."
         )
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)

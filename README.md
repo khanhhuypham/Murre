@@ -8,6 +8,12 @@ Cài đặt theo paper *MURRE: Multi-Hop Table Retrieval with Removal for Open-D
 Text-to-SQL* (COLING 2025). Năm chỗ bản này bám paper thay vì bám code phát hành
 của tác giả: xem docstring đầu [src/pipeline/retriever.py](src/pipeline/retriever.py).
 
+**Nhánh này KHÔNG nhằm tái hiện số của paper.** Thuật toán retrieval vẫn theo
+paper, nhưng encoder thì không: SGPT-125M đã bị bỏ, thay bằng một bi-encoder đa
+ngữ dùng cho mọi dataset (xem mục 6). Nghĩa là số đo trên Spider/BIRD của bản này
+không so trực tiếp được với Bảng 2 của paper — cần bản đối chiếu thì xem lịch sử
+git.
+
 Dùng được hai đường: **CLI** (chạy batch, đo metric) và **HTTP API** (service).
 
 ---
@@ -37,7 +43,7 @@ Hai model tham gia:
 
 | Vai trò | Model | Khai ở |
 | --- | --- | --- |
-| Encode câu hỏi & schema | bi-encoder HuggingFace, chọn theo ngôn ngữ | `encoders` + `datasets.<ds>.encoder` |
+| Encode câu hỏi & schema | bi-encoder đa ngữ (`multilingual-e5-base`) | `encoders` + `datasets.<ds>.encoder` |
 | Pha Removal + sinh SQL | LLM qua API tương thích OpenAI | `llm.active_profile` |
 
 ---
@@ -69,9 +75,9 @@ OPENAI_BASE_URL=https://api.groq.com/openai/v1     # bỏ dòng này nếu dùng
 rồi đổi `llm.active_profile` trong `config.yaml`. `.env` chỉ giữ **bí mật** —
 mọi thứ khác nằm trong `config.yaml` (file đó nằm trong git nên đừng để key vào).
 
-Lần chạy đầu sẽ tải encoder từ HuggingFace và mã hoá cả corpus schema — mất vài
-phút. Kết quả cache lại (`outputs/{dataset}_{model}_embeddings.pt`), lần sau nạp
-gần như tức thì.
+Lần chạy đầu sẽ tải encoder từ HuggingFace (`intfloat/multilingual-e5-base`,
+~1.1 GB) và mã hoá cả corpus schema — mất vài phút. Kết quả cache lại
+(`outputs/{dataset}_{model}_embeddings.pt`), lần sau nạp gần như tức thì.
 
 Kiểm tra cấu hình đang thực sự hiệu lực:
 
@@ -160,9 +166,11 @@ curl -X POST localhost:8000/retrieve \
   -d '{"question": "Which airlines fly to AHD?", "dataset": "spider", "top_k": 5}'
 ```
 
-**Một server phục vụ được cả ba dataset cùng lúc**, mỗi cái dùng encoder của nó —
-chỉ cần đổi field `dataset` trong body. `GET /health` in ra dataset nào đang phục
-vụ và encoder nào đi với nó.
+**Một server phục vụ được cả ba dataset cùng lúc** — chỉ cần đổi field `dataset`
+trong body. Mỗi dataset khai encoder của nó, nhưng hiện cả ba trỏ cùng một profile
+nên model chỉ nạp **một** bản trong RAM (~1.1 GB), phần thêm mỗi dataset chỉ là
+corpus + embeddings của nó. `GET /health` in ra dataset nào đang phục vụ và encoder
+nào đi với nó.
 
 Với `api.preload: true` (mặc định), service nạp encoder + embeddings + ping LLM
 **trước khi** nhận request: khởi động chậm hàng chục giây nhưng request đầu tiên
@@ -204,17 +212,17 @@ LLM chạy trên host (Ollama) thì trỏ `OPENAI_BASE_URL` vào
 nằm trong [src/config.py](src/config.py); `config.yaml` chỉ khai những gì cần đổi.
 
 Điểm mấu chốt: **mỗi dataset khai encoder của nó**, nên đổi ngôn ngữ chỉ là đổi
-`general.dataset` — encoder tự đi theo, không phải nhớ sửa thêm gì.
+`general.dataset` — encoder tự đi theo, không phải nhớ sửa thêm gì. Hiện cả ba
+dataset trỏ chung một profile đa ngữ, nhưng tách ra chỉ là thêm một profile.
 
 ```yaml
 encoders:
-    sgpt:         { type: sgpt,     model_name: Muennighoff/SGPT-125M-... }
     multilingual: { type: sentence, model_name: intfloat/multilingual-e5-base,
                     query_prefix: "query: ", doc_prefix: "passage: " }
 
 datasets:
-    spider:     { encoder: sgpt }
-    bird:       { encoder: sgpt }
+    spider:     { encoder: multilingual }
+    bird:       { encoder: multilingual }
     # format: dữ liệu trên đĩa đang ở dạng nào — xem mục 7b
     vitext2sql: { encoder: multilingual, format: vitext2sql }
 ```
@@ -224,8 +232,8 @@ Những khoá hay chạm nhất:
 | Khoá | Mặc định | Ý nghĩa |
 | --- | --- | --- |
 | `general.dataset` | `spider` | `spider` \| `bird` \| `vitext2sql` |
-| `encoders.<tên>.type` | — | `sgpt` (tiếng Anh) hoặc `sentence` (đa ngữ) |
-| `datasets.<ds>.encoder` | theo ngôn ngữ | dataset này dùng profile encoder nào |
+| `encoders.<tên>.type` | `sentence` | họ encoder; hiện chỉ có `sentence` (mean pooling + tiền tố) |
+| `datasets.<ds>.encoder` | `multilingual` | dataset này dùng profile encoder nào |
 | `datasets.<ds>.format` | `murre` | `murre` (đã tiền xử lý) hoặc `vitext2sql` (thô) |
 | `pipeline.beam_size` | 5 | B — số nhánh giữ lại mỗi hop |
 | `pipeline.max_hop` | 3 | H — **đếm cả hop 1**, nên H=3 là 2 lượt Removal |
@@ -270,12 +278,9 @@ thêm `prompts/{tên}_rewrite.txt`, rồi thêm một field vào `DatasetsConfig
 
 [ViText2SQL](https://github.com/VinAIResearch/ViText2SQL) (VinAI) là bản dịch
 Spider sang tiếng Việt: cùng 166 database / 876 bảng, nhưng câu hỏi và tên
-bảng/cột đều là tiếng Việt. Dữ liệu không đi kèm repo — tải bằng:
-
-```bash
-python scripts/download_vitext2sql.py            # cả 2 mức, mọi split (~76 MB)
-python scripts/download_vitext2sql.py --verify   # đối chiếu lại với upstream
-```
+bảng/cột đều là tiếng Việt. **Dữ liệu không đi kèm repo và không có script tải** —
+lấy bằng tay từ [thư mục `data/` của upstream](https://github.com/VinAIResearch/ViText2SQL/tree/master/data)
+rồi đặt vào `dataset/vitext2sql/data/` theo đúng bố cục bên dưới (~76 MB).
 
 Rồi chạy — không cần bước chuyển đổi nào:
 
@@ -287,21 +292,25 @@ python -m cli run --dataset vitext2sql --limit 20
 
 Với API thì chỉ cần `"dataset": "vitext2sql"` trong body.
 
-**Dữ liệu giữ nguyên xi bản gốc.** Cây thư mục sao y upstream, file ghi nhị phân
-không parse lại:
+**Dữ liệu giữ nguyên xi bản gốc.** Cây thư mục sao y upstream — đặt file vào đúng
+chỗ này thì `loader.py` tìm thấy, không cần khai đường dẫn trong `config.yaml`:
 
 ```
-dataset/vitext2sql/
-├── MANIFEST.json        ← script ghi ra, NẰM NGOÀI cây dữ liệu
-└── data/                ← bản sao nguyên vẹn của ViText2SQL/data/
-    ├── syllable-level/{dev,test,train,tables}.json, test_gold.sql
-    └── word-level/      (như trên)
+dataset/vitext2sql/data/           ← bản sao nguyên vẹn của ViText2SQL/data/
+├── syllable-level/{dev,test,train,tables}.json, test_gold.sql
+└── word-level/                    (như trên)
 ```
 
-Mỗi file được đối chiếu với GitHub API bằng kích thước **và** git blob SHA-1
-(`sha1("blob <độ dài>\0" + nội dung)` — đúng cách git tự băm), nên `--verify` nói
-được chắc chắn là file trên đĩa giống upstream từng byte. File tải về mà lệch thì
-**không được ghi ra đĩa** — thà thiếu file còn hơn có file sai mà tưởng là đúng.
+**Tải bằng tay thì không có gì kiểm tra hộ.** Lấy file từ GitHub qua trình duyệt
+rất dễ ra HTML của trang thay vì JSON, hoặc lẫn `word-level` với `syllable-level`.
+Cả hai lỗi đó KHÔNG nổ ra lúc đọc — chỉ thấy recall tụt bất thường. Dùng nút
+**Download raw file**, rồi kiểm nhanh:
+
+```bash
+python -c "import json;d=json.load(open('dataset/vitext2sql/data/syllable-level/dev.json',encoding='utf-8'));print(len(d),d[0]['question'])"
+```
+
+Đúng thì in ra `954` kèm một câu hỏi tiếng Việt (split dev, mức âm tiết).
 
 **MURRE cần định dạng khác, và phần đó nằm trong CODE.** Dữ liệu thô thiếu ba khoá
 mà pipeline cần:
@@ -327,13 +336,14 @@ hai nguồn rồi hợp lại, vì mỗi nguồn thiếu một kiểu: cây cú 
 ViText2SQL **bỏ sót bảng thứ ba ở các câu JOIN 3 bảng** (44/954 câu của split dev),
 còn đọc token thì không thấy bảng nằm trong subquery ở mệnh đề FROM.
 
-**Encoder phải là model đa ngữ.** SGPT chỉ học tiếng Anh, dùng nguyên nó cho tiếng
-Việt thì retrieval gần như ngẫu nhiên. Đo trên chính corpus này (954 câu,
-876 schema, chỉ hop 1 nên không có LLM xen vào):
+**Encoder phải là model đa ngữ.** Đây là lý do encoder SGPT của paper đã bị bỏ
+khỏi nhánh này: nó chỉ học tiếng Anh, dùng nguyên cho tiếng Việt thì retrieval gần
+như ngẫu nhiên. Đo trên chính corpus này (954 câu, 876 schema, chỉ hop 1 nên không
+có LLM xen vào):
 
 | encoder | r@3 | r@5 | r@10 | r@20 |
 | --- | --- | --- | --- | --- |
-| SGPT-125M (`type: sgpt`) | 4.0 | 5.6 | 10.2 | 16.6 |
+| SGPT-125M (đã bỏ) | 4.0 | 5.6 | 10.2 | 16.6 |
 | multilingual-e5-base (`type: sentence`) | **73.4** | **82.2** | **90.7** | **94.6** |
 
 Nguyên nhân nằm ở tokenizer: BPE tiếng Anh của SGPT băm mỗi schema tiếng Việt ra
@@ -343,8 +353,7 @@ tokenizer đa ngữ, cùng nội dung đó hết 32 token.
 
 Việc chọn encoder đã nằm sẵn trong `config.yaml`: `datasets.vitext2sql.encoder`
 trỏ tới profile `multilingual`, kèm hai tiền tố `query: ` / `passage: ` mà họ E5
-bắt buộc phải có. Để so sánh: cùng đo hop 1, Spider tiếng Anh với SGPT-125M được
-r@3/5/10/20 = 63.0 / 73.1 / 80.7 / 86.3 — đúng bằng Bảng 2 của paper.
+bắt buộc phải có.
 
 **Đổi mức tách từ hoặc đổi split.** ViText2SQL có `syllable` (âm tiết rời,
 "kiến trúc sư") và `word` (nối gạch dưới, "kiến_trúc_sư"). Mức `word` dành cho
@@ -395,14 +404,14 @@ dataset/                       DỮ LIỆU + cách đọc dữ liệu
 ├── loader.py                  đọc mọi dataset, rẽ theo `format`, trả cùng hình dạng
 ├── vitext2sql.py              thích nghi ViText2SQL THÔ sang định dạng MURRE
 ├── spider/  bird/             dữ liệu đã tiền xử lý, đi kèm repo
-└── vitext2sql/data/           bản sao nguyên xi upstream (tải riêng, xem 7b)
+└── vitext2sql/data/           bản sao nguyên xi upstream (tải bằng tay, xem 7b)
 
 src/
 ├── cli.py                     điểm vào CLI (ask / run / embed / config)
 ├── server.py                  điểm vào API — tạo app, lifespan, exception handler
 ├── config.py                  nạp & validate config.yaml, dựng mọi đường dẫn
 ├── enums.py                   Dataset, JobStatus
-├── core/                      encoder (SGPT + đa ngữ), llm, rewriter (Removal), corpus
+├── core/                      encoder (bi-encoder đa ngữ), llm, rewriter (Removal), corpus
 ├── pipeline/                  retriever (MURRE), runner (chạy batch), factory, sql
 ├── api/                       dependencies (vòng đời model), evaluator, jobs, routers/
 ├── models/                    kiểu dữ liệu miền: errors, records, retrieval, metrics
@@ -410,10 +419,9 @@ src/
 └── utils/                     logger, metrics, scoring, schema, display
 
 scripts/
-├── download_vitext2sql.py     tải ViText2SQL về, giữ nguyên xi dữ liệu gốc
 └── build_vitext2sql_prompt.py dựng prompt Removal từ split train
 
-tests/                         125 test, không tải model và không gọi mạng
+tests/                         121 test, không tải model và không gọi mạng
 ```
 
 Hai ranh giới đáng nhớ:
@@ -483,6 +491,6 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-125 test, chạy khoảng 20 giây — gần hết là thời gian import torch. Encoder và
+121 test, chạy khoảng 20 giây — gần hết là thời gian import torch. Encoder và
 LLM đều được thay bằng bản giả: không tải model, không gọi mạng, không đụng tới
 `dataset/` hay `outputs/`.

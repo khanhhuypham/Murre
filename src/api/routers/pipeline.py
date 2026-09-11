@@ -54,7 +54,7 @@ async def pipeline_run(
     `cfg` là biến toàn cục của process nên mỗi lúc chỉ chạy được MỘT job; gọi khi
     đang có job khác sẽ nhận `409`.
     """
-    require_dataset(payload.dataset)
+    require_dataset(ds_name=payload.dataset)
 
     state = request.app.state
     running: List[str] = [j.job_id for j in state.jobs.values() if not j.status.is_final]
@@ -73,8 +73,14 @@ async def pipeline_run(
     )
     state.jobs[job_id] = job
 
+    # to_thread() chuyển tiếp nguyên keyword argument xuống run_job.
     task: asyncio.Task = asyncio.create_task(
-        asyncio.to_thread(run_job, state, job_id, payload)
+        asyncio.to_thread(
+            run_job,
+            state=state,
+            job_id=job_id,
+            req=payload,
+        )
     )
     state.job_tasks[job_id] = task
 

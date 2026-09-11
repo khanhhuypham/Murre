@@ -53,7 +53,7 @@ class Dataset(BaseStrEnum):
     """Dataset text-to-SQL được hỗ trợ (khớp `general.dataset` trong config.yaml).
 
     vitext2sql là tiếng Việt (ViText2SQL của VinAI) — dữ liệu không đi kèm repo,
-    dựng bằng `python scripts/prepare_vitext2sql.py`.
+    tải bằng tay từ upstream của VinAI (xem README mục 7b).
     """
     SPIDER = "spider"
     BIRD = "bird"
