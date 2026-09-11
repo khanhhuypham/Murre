@@ -20,10 +20,15 @@ from utils import logger
 
 
 class LLMGenerator:
-    """Gọi LLM qua SDK OpenAI, đọc api_key/base_url/model_name từ profile trong config.
+    """Gọi LLM qua SDK OpenAI, đọc base_url/model_name từ profile trong config.
 
-    Endpoint local (Ollama) được đối xử riêng ở hai chỗ: không cần api_key thật, và
-    mọi lỗi đều kèm gợi ý sửa — đó là chỗ hay quên bật server hoặc quên pull model.
+    Khóa API KHÔNG quyết định ở đây: hỏi profile qua resolve_api_key(), cũng là
+    chỗ quyết định endpoint local được miễn khóa. Tương tự `is_local` — suy từ
+    base_url, và suy ở LLMProfileConfig chứ không phải ở lớp này.
+
+    Việc riêng của lớp này với endpoint local là CHẨN ĐOÁN: thử kết nối trước khi
+    gọi, và mọi lỗi đều kèm gợi ý sửa — đó là chỗ hay quên bật server hoặc quên
+    pull model.
     """
 
     def __init__(self, profile: Optional[str] = None) -> None:

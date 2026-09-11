@@ -7,7 +7,7 @@ Section nào có trong config.yaml thì ghi đè mặc định tương ứng —
 
     from config import cfg
 
-    cfg.dataset_paths.tables            # dataset/spider/tables.json
+    cfg.dataset_config().tables         # dataset/spider/tables.json
     cfg.encoder_for("vitext2sql")       # profile encoder của dataset tiếng Việt
     cfg.outputs.result()                # outputs/spider/multilingual-e5-base/turn3/dev.json
     cfg.outputs.sql(k=5)                # outputs/spider/multilingual-e5-base/turn3/sql.5.txt
@@ -17,7 +17,15 @@ MỖI DATASET KHAI ENCODER RIÊNG (`datasets.<ds>.encoder` → một khoá trong
 hai, không cần biến môi trường.
 
 Chỉ BÍ MẬT mới đi qua .env, vì config.yaml nằm trong git:
-    OPENAI_API_KEY, OPENAI_BASE_URL   (ghi đè profile LLM đang active)
+    khóa API   mỗi profile LLM đọc biến MÔI TRƯỜNG CỦA RIÊNG NÓ, khai ở
+               `api_key_env` (mặc định OPENAI_API_KEY). Đọc lúc cần, trong
+               LLMProfileConfig.resolve_api_key(), nên profile KHÔNG active cũng
+               lấy được khóa, và khóa không bị chép vào object rồi lộ ra /config.
+    OPENAI_BASE_URL   ghi đè base_url, CHỈ cho profile đang active.
+
+Profile active phải dùng được ngay lúc nạp file này: thiếu khóa mà không phải
+endpoint local thì nổ tại đây, chứ không đợi tới lúc dựng LLMGenerator — xem
+_check_active_llm_profile().
 
 Trỏ sang file config khác: `--config <đường dẫn>` hoặc env MURRE_CONFIG_PATH —
 dùng khi mỗi môi trường triển khai có một file riêng.
@@ -459,16 +467,6 @@ class Settings(BaseModel):
                 f"  Profile có sẵn: {list(self.encoders)}"
             )
         return profile
-
-    @property
-    def dataset_paths(self) -> DatasetConfig:
-        """Khai báo của `general.dataset` đang chọn.
-
-            cfg.dataset_paths.tables   → "dataset/spider/tables.json"
-            cfg.dataset_paths.prompt   → "prompts/spider_rewrite.txt"
-        """
-        return self.dataset_config()
-
 
 # ---------------------------------------------------------------------------
 # Nạp config

@@ -87,6 +87,15 @@ def warning(msg: str, *args: object, **kwargs: object) -> None:
 def error(msg: str, *args: object, **kwargs: object) -> None:
     _logger.error(msg, *args, **kwargs)
 
+def exception(msg: str, *args: object, **kwargs: object) -> None:
+    """Như error() nhưng KÈM traceback — chỉ gọi trong khối `except`.
+
+    Bắt buộc phải có mặt: server.py và api/jobs.py đều gọi logger.exception() ở
+    nhánh bắt lỗi. Thiếu nó thì chính lúc xử lý lỗi lại nổ AttributeError, và lỗi
+    gốc bị nuốt mất — hỏng đúng chỗ khó lần ra nhất.
+    """
+    _logger.exception(msg, *args, **kwargs)
+
 def debug(msg: str, *args: object, **kwargs: object) -> None:
     _logger.debug(msg, *args, **kwargs)
 

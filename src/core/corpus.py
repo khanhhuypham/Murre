@@ -1,7 +1,8 @@
 """core/corpus.py — Nạp corpus schema + embeddings (có cache).
 
 Một chỗ duy nhất cho chuỗi "đọc tables.json → build corpus → nạp/encode embeddings
-→ lưu cache", dùng chung cho cả CLI và API.
+→ lưu cache". Hai chỗ gọi: MurreRetriever.for_dataset() (đường chạy thật của cả
+CLI lẫn API) và `python -m cli embed` (chỉ mã hoá trước rồi lưu cache).
 """
 from __future__ import annotations
 

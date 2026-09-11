@@ -11,9 +11,10 @@ from typing import List
 
 from fastapi import APIRouter, Request
 
-from api.dependencies import LoadedDataset, load_dataset_once, require_dataset
+from api.dependencies import load_dataset_once, require_dataset
 from models.errors import AppError
 from models.retrieval import RetrievedTable
+from pipeline.retriever import MurreRetriever
 from pipeline.sql import build_sql
 from schemas.sql import SqlRequest, SqlResponse
 
@@ -27,7 +28,7 @@ async def generate_sql(payload: SqlRequest, request: Request) -> SqlResponse:
 
     require_dataset(ds_name=payload.dataset)
     state = request.app.state
-    ds: LoadedDataset = await load_dataset_once(
+    retriever: MurreRetriever = await load_dataset_once(
         state=state,
         ds_name=payload.dataset,
     )
@@ -35,10 +36,8 @@ async def generate_sql(payload: SqlRequest, request: Request) -> SqlResponse:
     # Cả retrieve lẫn gọi LLM đều blocking → đẩy sang thread để không chẹn event loop.
     # to_thread() chuyển tiếp nguyên keyword argument xuống hàm được gọi.
     tables: List[RetrievedTable] = await asyncio.to_thread(
-        ds.retriever.run,
+        retriever.run,
         question=payload.question,
-        corpus=ds.corpus,
-        schema_embeddings=ds.embs,
     )
     if not tables:
         raise AppError.conflict(message="Không tìm được bảng nào cho câu hỏi này.")

@@ -1,4 +1,14 @@
-"""api/dependencies.py — Nạp encoder / LLM / embeddings cho từng dataset."""
+"""api/dependencies.py — Vòng đời dataset của service: nạp một lần, dùng lại.
+
+Giữ trong app.state một MurreRetriever cho mỗi dataset (retriever đã ngậm sẵn
+corpus + embeddings) và MỘT LLMGenerator dùng chung cho mọi dataset.
+
+Encoder KHÔNG nằm ở đây: SentenceEncoder.get() tự dùng lại instance theo tên
+profile. Phần ráp cũng không nằm ở đây — nó ở MurreRetriever.for_dataset().
+
+Ngoài vòng đời, file này còn trả lời "service được phép phục vụ dataset nào"
+(configured_datasets / available_datasets / require_dataset) và chạy warm-up.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -10,35 +20,38 @@ from starlette.datastructures import State
 
 from config import cfg
 from core.llm import LLMGenerator
+from pipeline.retriever import MurreRetriever
 from enums import Dataset
 from models.errors import AppError
-from pipeline.factory import LoadedDataset, build_dataset
 from utils import logger
 
 
-def _build_for_state(state: State, ds_name: Dataset) -> LoadedDataset:
-    """Ráp 1 dataset bằng LLM của server — phần ráp ở pipeline/factory.py.
+def _build_for_state(state: State, ds_name: Dataset) -> MurreRetriever:
+    """Ráp 1 dataset bằng LLM của server — phần ráp ở MurreRetriever.for_dataset().
 
     Việc riêng của server là VÒNG ĐỜI của LLM: tạo một lần rồi giữ trong app.state
     cho MỌI dataset dùng chung, nên phải tạo ở đây rồi truyền xuống.
 
     Encoder KHÔNG cần giữ ở đây nữa: SentenceEncoder.get() đã dùng lại instance
-    theo tên profile, nên build_dataset() tự gọi là đủ — cả ba dataset cùng trỏ
+    theo tên profile, nên for_dataset() tự gọi là đủ — cả ba dataset cùng trỏ
     `multilingual` vẫn chỉ nạp model một lần. Giữ thêm một dict trong app.state
     chỉ là cache thứ hai khoá y hệt cache thứ nhất.
     """
     if state.llm is None:
         state.llm = LLMGenerator()
 
-    loaded: LoadedDataset = build_dataset(dataset=ds_name, llm=state.llm)
+    retriever: MurreRetriever = MurreRetriever.for_dataset(
+        dataset=ds_name,
+        llm=state.llm,
+    )
     logger.info(
-        f"[API] Đã nạp dataset '{ds_name}' ({len(loaded.corpus)} schemas, "
+        f"[API] Đã nạp dataset '{ds_name}' ({len(retriever.corpus)} schemas, "
         f"encoder '{cfg.dataset_config(ds_name).encoder}')"
     )
-    return loaded
+    return retriever
 
 
-async def load_dataset_once(state: State, ds_name: Dataset) -> LoadedDataset:
+async def load_dataset_once(state: State, ds_name: Dataset) -> MurreRetriever:
     """Trả về dataset đã nạp, tự nạp nếu chưa có (mỗi dataset chỉ nạp một lần)."""
     if ds_name in state.datasets:
         return state.datasets[ds_name]

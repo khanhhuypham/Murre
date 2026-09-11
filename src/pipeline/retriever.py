@@ -100,11 +100,32 @@ class RetrievalPath:
 class MurreRetriever:
     """MURRE đầy đủ, chạy trong RAM, không đọc/ghi file trung gian.
 
-        retriever = MurreRetriever(encoder=encoder, rewriter=rewriter, llm=llm)
-        tables = retriever.run(question, corpus, schema_embeddings)
-        sql = retriever.generate_sql(question, tables)
+    Ráp từ config — đường dùng thật của cli.py và api/:
 
-    beam_size / max_hop để None thì lấy từ cfg.pipeline.
+        retriever = MurreRetriever.for_dataset(dataset="vitext2sql")
+        tables = retriever.run(question=question)
+        sql = retriever.generate_sql(question=question, tables=tables)
+
+    Tự ráp tay — dùng khi test, hoặc khi cần corpus không đến từ config:
+
+        retriever = MurreRetriever(
+            encoder=encoder, rewriter=rewriter, llm=llm,
+            corpus=corpus, embeddings=embs,
+        )
+
+    Retriever SỞ HỮU corpus của nó: `corpus` + `embeddings` khai lúc dựng, không
+    phải tham số của run(). Retriever vốn đã gắn với MỘT dataset (rewriter nạp
+    prompt riêng của dataset đó lúc dựng), nên corpus nằm cùng chỗ là đúng nhà —
+    và ghép nhầm corpus dataset này với embeddings dataset kia không viết ra
+    được. __init__ còn kiểm hai thứ đó đi cùng nhau và khớp số dòng.
+
+    Embeddings được chuẩn hoá L2 MỘT LẦN lúc dựng (self.doc_embeddings), không
+    phải mỗi lần run().
+
+    rewriter / llm : phải có ít nhất một. Thiếu rewriter thì dựng tạm một cái từ
+                     `llm` với prompt của general.dataset — chỉ hợp khi chạy đúng
+                     dataset mặc định. generate_sql() thì bắt buộc có `llm`.
+    beam_size / max_hop : để None thì lấy từ cfg.pipeline.
     """
 
     def __init__(
@@ -113,6 +134,8 @@ class MurreRetriever:
         rewriter: Optional[QueryRewriter] = None,
         llm: Optional[LLMGenerator] = None,
         *,
+        corpus: Optional[List[str]] = None,
+        embeddings: Optional[torch.Tensor] = None,
         beam_size: Optional[int] = None,
         max_hop: Optional[int] = None,
     ) -> None:
@@ -120,6 +143,18 @@ class MurreRetriever:
             raise ValueError(
                 "MurreRetriever cần `rewriter` hoặc `llm` cho pha Removal (§3.4)."
             )
+        if (corpus is None) != (embeddings is None):
+            raise ValueError(
+                "`corpus` và `embeddings` phải đi cùng nhau: embeddings[i] là "
+                "vector của corpus[i]."
+            )
+        if corpus is not None and embeddings is not None:
+            if len(corpus) != embeddings.size(0):
+                raise ValueError(
+                    f"corpus có {len(corpus)} schema nhưng embeddings có "
+                    f"{embeddings.size(0)} vector. Lệch một dòng là điểm số gán "
+                    f"nhầm bảng trong toàn bộ corpus mà không có lỗi nào."
+                )
 
         self.encoder: SentenceEncoder = encoder
         self.llm: Optional[LLMGenerator] = llm
@@ -127,27 +162,84 @@ class MurreRetriever:
             rewriter if rewriter is not None else QueryRewriter(llm=llm)
         )
 
+        self.corpus: List[str] = list(corpus) if corpus is not None else []
+        # Chuẩn hoá MỘT LẦN ở đây, không phải mỗi lần run(). Trước đây mỗi câu hỏi
+        # chuẩn hoá lại cả ma trận corpus — một lượt dev.json là hàng nghìn lần
+        # làm lại đúng một phép tính trên ma trận không hề đổi.
+        self.doc_embeddings: torch.Tensor = (
+            F.normalize(input=embeddings, p=2, dim=1)
+            if embeddings is not None
+            else torch.empty(0, 0)
+        )
+
         # B và H của paper (§4.1: B = 5, H = 3).
         self.beam_size: int = beam_size if beam_size is not None else cfg.pipeline.beam_size
         self.max_hop: int = max_hop if max_hop is not None else cfg.pipeline.max_hop
 
+    @classmethod
+    def for_dataset(
+        cls,
+        dataset: Optional[str] = None,
+        encoder: Optional[SentenceEncoder] = None,
+        llm: Optional[LLMGenerator] = None,
+    ) -> MurreRetriever:
+        """Retriever CỦA `dataset`, ráp sẵn từ config — LỐI VÀO của cli.py và api/.
+
+            dataset : None → dataset đang chọn (general.dataset).
+            encoder : None → SentenceEncoder.get(dataset). Instance đó đã dùng lại
+                      theo tên profile, nên spider và bird (cùng profile) chỉ nạp
+                      model một lần. Chỉ TRUYỀN VÀO khi cần encoder khác hẳn.
+            llm     : None → LLMGenerator() với profile đang active. Truyền vào
+                      để dùng lại (API giữ một LLM trong app.state cho mọi
+                      dataset) hoặc để chọn profile khác:
+                      `llm=LLMGenerator(profile="qwen2.5-14b")`.
+
+        KHÔNG có tham số `llm_profile` ở đây. Có cả `llm` lẫn `llm_profile` là hai
+        cách nói cùng một chuyện, mà truyền cả hai thì `llm_profile` bị bỏ qua
+        lặng lẽ. Chỗ gọi tự dựng LLMGenerator là hết đường hiểu nhầm.
+
+        LLM nên dựng TRƯỚC corpus: endpoint chưa bật thì hỏng ngay, không mất công
+        encode cả corpus rồi mới báo lỗi. Truyền `llm` vào thì chỗ gọi đã dựng nó
+        xong từ trước rồi, nên thứ tự đó vẫn giữ nguyên.
+        """
+        # Import trong thân hàm, CÙNG LÝ DO với pipeline.sql ở generate_sql():
+        # core.corpus kéo theo dataset/loader, mà nó chỉ cần cho việc RÁP, không
+        # cần cho thuật toán retrieval. Để ở đầu file là ai import retriever cũng
+        # phải nạp cả tầng đọc dataset.
+        from core.corpus import build_corpus, load_embeddings
+
+        if llm is None:
+            llm = LLMGenerator()
+        if encoder is None:
+            encoder = SentenceEncoder.get(dataset=dataset)
+
+        corpus: List[str] = build_corpus(dataset=dataset)
+        embs: torch.Tensor = load_embeddings(
+            encoder=encoder, corpus=corpus, dataset=dataset,
+        )
+        return cls(
+            encoder=encoder,
+            rewriter=QueryRewriter(llm=llm, dataset=dataset),
+            llm=llm,
+            corpus=corpus,
+            embeddings=embs,
+        )
+
     # =========================================================================
     # Pha 1 — Retrieval (§3.3, Equation 3.1)
     # =========================================================================
-    def _retrieve(
-        self,
-        query: str,
-        corpus: List[str],
-        doc_embeddings: torch.Tensor,
-        top_k: int,
-    ) -> List[Hit]:
+    def _retrieve(self, query: str, top_k: int) -> List[Hit]:
         """Top-k bảng của TOÀN BỘ corpus theo cosine similarity — Equation 3.1.
 
-            doc_embeddings : ma trận ĐÃ chuẩn hoá L2, hàng i là vector của corpus[i].
+        Dùng self.corpus và self.doc_embeddings (đã chuẩn hoá L2 lúc __init__,
+        hàng i là vector của corpus[i]).
 
         Cả câu truy vấn được encode thành MỘT vector Emb(q_h,b), kể cả khi Removal
         trả về nhiều bảng trên nhiều dòng — đúng Equation 3.1, không tách sub-query.
         """
+        if not self.corpus:
+            return []
+
         text: str = " ".join(query.split()) or query
         q: torch.Tensor = F.normalize(
             input=self.encoder.encode(texts=[text], is_query=True),
@@ -155,11 +247,11 @@ class MurreRetriever:
             dim=1
         )
 
-        sims: torch.Tensor = (q @ doc_embeddings.T).squeeze(0)
+        sims: torch.Tensor = (q @ self.doc_embeddings.T).squeeze(0)
         values, positions = torch.topk(input=sims, k=min(top_k, sims.size(0)))
 
         return [
-            Hit(schema=corpus[p], similarity=float(v), index=p)
+            Hit(schema=self.corpus[p], similarity=float(v), index=p)
             for v, p in zip(values.tolist(), positions.tolist())
         ]
 
@@ -218,23 +310,15 @@ class MurreRetriever:
     # =========================================================================
     # Ráp lại
     # =========================================================================
-    def run(
-        self,
-        question: str,
-        corpus: List[str],
-        schema_embeddings: torch.Tensor,
-        verbose: bool = False,
-    ) -> List[RetrievedTable]:
-        """Chạy đủ pipeline retrieve cho MỘT câu hỏi → bảng xếp theo điểm giảm dần."""
-        # Chuẩn hoá corpus MỘT lần cho cả câu hỏi thay vì mỗi lần _retrieve.
-        docs: torch.Tensor = F.normalize(input=schema_embeddings, p=2, dim=1)
+    def run(self, question: str, verbose: bool = False) -> List[RetrievedTable]:
+        """Chạy đủ pipeline retrieve cho MỘT câu hỏi → bảng xếp theo điểm giảm dần.
 
+        Corpus lấy từ chính retriever (xem __init__), không truyền vào nữa.
+        """
         # --- hop 1: câu hỏi GỐC, không tabulate (Appendix K) -----------------
         first_hits: List[Hit] = self._retrieve(
             query=question,
-            corpus=corpus,
-            doc_embeddings=docs,
-            top_k=self.beam_size
+            top_k=self.beam_size,
         )
         if not first_hits:
             return []
@@ -266,8 +350,6 @@ class MurreRetriever:
                 # Retrieval của hop này: câu Removal quét toàn corpus, lấy top-B.
                 hits: List[Hit] = self._retrieve(
                     query=next_query,
-                    corpus=corpus,
-                    doc_embeddings=docs,
                     top_k=self.beam_size,
                 )
 

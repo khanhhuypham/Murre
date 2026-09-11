@@ -13,8 +13,10 @@ nó chỉ học tiếng Anh, nên corpus tiếng Việt (ViText2SQL) bị BPE ti
 mất nghĩa (r@5 = 5.6 so với 82.2 của multilingual-e5-base). Cần đối chiếu với
 Bảng 2 của paper thì xem lịch sử git, không dựng lại ở đây.
 
-`type` giữ lại dù chỉ còn một giá trị, và config vẫn CHẶN mọi giá trị khác: config cũ khai `type: sgpt` phải nổ lỗi chứ không được lặng lẽ rơi về
-encoder này — không ai muốn chạy cả lượt rồi mới đoán mình đã dùng model nào.
+`type` giữ lại dù chỉ còn một giá trị, và EncoderProfileConfig vẫn CHẶN mọi giá
+trị khác ngay lúc nạp config.yaml: config cũ khai `type: sgpt` phải nổ lỗi chứ
+không được lặng lẽ rơi về encoder này — không ai muốn chạy cả lượt rồi mới đoán
+mình đã dùng model nào.
 
 Ba hàm nằm NGOÀI class (_load, plan_batches, _encode_batched) là có chủ ý, không
 phải sót lại: cả ba không đọc `self` gì cả, nên test gọi được thẳng bằng dữ liệu

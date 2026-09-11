@@ -1,7 +1,15 @@
 """api/jobs.py — Thân của một lần chạy pipeline dưới dạng job trong RAM.
 
-`cfg` là biến toàn cục của process nên mỗi lúc chỉ chạy được MỘT job; router
-/pipeline/run là nơi chặn (409) khi đã có job chưa kết thúc.
+`cfg` là biến toàn cục của process nên mỗi lúc chỉ chạy được MỘT job. CHẶN Ở HAI
+TẦNG, cố ý:
+
+    router /pipeline/run    từ chối sớm (409) khi còn job chưa kết thúc — người
+                            gọi biết ngay, không phải đợi rồi mới thấy job FAILED.
+    runner._RUN_LOCK        chốt thật, vì run_pipeline() còn được gọi từ CLI chứ
+                            không riêng router; nó ném AppError.pipeline_busy().
+
+Job chỉ nằm trong RAM (app.state.jobs) — restart service là mất. Kết quả thì đã
+ghi ra đĩa, tra lại bằng /evaluate.
 """
 from __future__ import annotations
 
@@ -23,7 +31,12 @@ def now() -> str:
 
 
 def run_job(state: State, job_id: str, req: PipelineRunRequest) -> None:
-    """Thân của một job — chạy trong thread riêng (không chạm event loop)."""
+    """Thân của một job — chạy trong thread riêng (không chạm event loop).
+
+    KHÔNG ném ra ngoài: mọi lỗi được ghi vào `job.status` + `job.error` rồi nuốt.
+    Chỗ gọi (`await task` trong /pipeline/run khi wait=true) vì vậy luôn chạy tới
+    nơi; muốn biết chạy được hay không thì đọc `job.status`, đừng bắt exception.
+    """
     job: PipelineJob = state.jobs[job_id]
     job.status = JobStatus.RUNNING
     job.started_at = now()
@@ -37,7 +50,11 @@ def run_job(state: State, job_id: str, req: PipelineRunRequest) -> None:
         run_pipeline(dataset=req.dataset, limit=req.limit, on_progress=on_progress)
         # Đọc lại metric bằng đúng đường code của /evaluate → hai endpoint không thể
         # lệch số nhau, và cũng xác nhận file vừa ghi đọc được thật.
-        job.result = evaluate_run(dataset=req.dataset, model=cfg.encoder_for(req.dataset).slug, k=req.k)
+        job.result = evaluate_run(
+            dataset=req.dataset,
+            model=cfg.encoder_for(dataset=req.dataset).slug,
+            k=req.k,
+        )
         job.status = JobStatus.SUCCEEDED
     except AppError as e:
         logger.warning(f"[API] Job {job_id} thất bại: {e}")

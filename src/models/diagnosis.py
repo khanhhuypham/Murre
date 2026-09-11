@@ -1,7 +1,10 @@
 """models/diagnosis.py — Chẩn đoán lỗi bằng BẢNG LUẬT, dùng chung cho mọi miền.
 
-CHƯA NỐI VÀO ĐÂU. File này và core/llm_errors.py mới chỉ là định nghĩa để xem
-trước; core/llm.py, pipeline/runner.py, api/ vẫn chạy nguyên như cũ.
+CHƯA NỐI VÀO ĐÂU, VÀ CHƯA CÓ MIỀN NÀO DÙNG. File này mới chỉ là cơ chế để xem
+trước; core/llm.py, pipeline/runner.py, api/ vẫn chạy nguyên như cũ, không file
+nào import ở đây. Bảng luật cho LLM từng viết thử ở core/llm_errors.py nhưng đã
+bỏ, nên phần "phần RIÊNG" dưới đây hiện chưa có bản thật nào — ví dụ trong
+docstring này là mã minh hoạ, không phải mã đang chạy.
 
 Ý TƯỞNG
 -------
@@ -15,7 +18,7 @@ ngay lúc ném lại.
     phần CHUNG (file này)   — cơ chế: khớp luật, dựng thông báo, mang theo phân
                               loại. Không biết gì về LLM, dataset hay encoder.
     phần RIÊNG (từng miền)  — chỉ là DỮ LIỆU: một enum loại lỗi + một bảng luật.
-                              Xem core/llm_errors.py làm ví dụ.
+                              Xem ví dụ ngay bên dưới.
 
 Thêm một miền mới (nạp dataset, tải encoder từ HuggingFace, chạy SQL...) = thêm
 một enum và một bảng, KHÔNG thêm cơ chế.

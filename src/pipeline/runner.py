@@ -4,8 +4,18 @@
     run_pipeline()      cả dev.json, ghi result + score. POST /pipeline/run và
                         `python -m cli run` đều gọi hàm này.
 
-`cfg` là biến toàn cục của process nên mỗi lúc chỉ cho phép MỘT lần chạy
-(_RUN_LOCK); trong lúc chạy, /retrieve cũng thấy cfg đã bị ghi đè.
+Chạy một dataset khác mặc định phải ghi đè `cfg.general.dataset` (xem
+override_dataset). `cfg` là biến toàn cục của process, nên:
+
+  - Chỉ cho phép MỘT lần chạy tại một thời điểm (_RUN_LOCK): hai lượt chạy song
+    song sẽ giành nhau đúng một biến đó.
+  - Trong lúc chạy, mọi chỗ đọc general.dataset NGẦM đều thấy giá trị tạm —
+    GET /config, và các dòng log in dataset đang chọn.
+
+/retrieve và /sql KHÔNG bị ảnh hưởng kết quả: chúng truyền dataset tường minh
+suốt từ router xuống (require_dataset → for_dataset → build_corpus /
+load_embeddings / QueryRewriter), và retriever đã nạp thì giữ sẵn corpus +
+prompt của dataset nó, không hỏi lại cfg lúc chạy.
 """
 from __future__ import annotations
 
@@ -17,13 +27,14 @@ from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from config import cfg
+from core.llm import LLMGenerator
 from dataset.loader import load_dev, resolve_question
 from enums import Dataset
 from models.errors import AppError
 from models.metrics import MetricScores
 from models.records import ResultRecord
 from models.retrieval import RetrievedTable
-from pipeline.factory import LoadedDataset, build_dataset
+from pipeline.retriever import MurreRetriever
 from utils import logger
 from utils.display import print_results
 from utils.metrics import compute_res
@@ -66,17 +77,22 @@ def run_one_question(
 ) -> List[RetrievedTable]:
     """Chạy MỘT câu hỏi rồi in top-K bảng ra terminal, không ghi file.
 
-        question    : None → câu đầu tiên trong dev.json
+        question    : None → câu đầu tiên trong dev.json của dataset đang chọn
         top_k       : số bảng in ra
         verbose     : in chi tiết từng hop
         llm_profile : None → dùng llm.active_profile
+
+    KHÔNG có tham số `dataset`: chọn dataset bằng cách bọc lời gọi trong
+    override_dataset() — cli.py làm đúng vậy cho cờ `--dataset`.
     """
     q: str = resolve_question(question=question)
 
-    loaded: LoadedDataset = build_dataset(llm_profile=llm_profile)
-    results: List[RetrievedTable] = loaded.retriever.run(
-        question=q, corpus=loaded.corpus, schema_embeddings=loaded.embs, verbose=verbose,
+    # Dựng LLM TRƯỚC corpus: endpoint chưa bật thì hỏng ngay, không mất công
+    # encode cả corpus rồi mới báo lỗi. profile=None → llm.active_profile.
+    retriever: MurreRetriever = MurreRetriever.for_dataset(
+        llm=LLMGenerator(profile=llm_profile),
     )
+    results: List[RetrievedTable] = retriever.run(question=q, verbose=verbose)
 
     print_results(question=q, results=results, top_k=top_k)
     return results
@@ -177,8 +193,8 @@ def _run_locked(
     if total == 0:
         raise AppError.bad_request(message="dev.json rỗng — không có câu hỏi nào để chạy.")
 
-    # Checkpoint đọc TRƯỚC khi dựng dataset: chạy lại một lượt đã xong thì không phải
-    # nạp encoder/LLM làm gì.
+    # Checkpoint đọc TRƯỚC khi dựng retriever: chạy lại một lượt đã xong thì không
+    # phải nạp encoder/LLM/corpus làm gì.
     ckpt_file: str = cfg.outputs.checkpoint()
     fingerprint: Dict[str, Any] = _run_fingerprint()
     done: Dict[int, ResultRecord] = _load_checkpoint(path=ckpt_file, fingerprint=fingerprint)
@@ -189,11 +205,11 @@ def _run_locked(
     if on_progress is not None:
         on_progress(len(done), total)
 
-    loaded: LoadedDataset = build_dataset()
+    retriever: MurreRetriever = MurreRetriever.for_dataset()
 
     logger.info(
         f"[Runner] Bắt đầu trên {total} câu ({len(todo)} câu còn phải chạy), "
-        f"corpus {len(loaded.corpus)} schemas."
+        f"corpus {len(retriever.corpus)} schemas."
     )
 
     os.makedirs(os.path.dirname(ckpt_file) or ".", exist_ok=True)
@@ -213,11 +229,7 @@ def _run_locked(
             hits: Optional[List[RetrievedTable]] = None
             for attempt in range(1, retries + 1):
                 try:
-                    hits = loaded.retriever.run(
-                        question=d["utterance"],
-                        corpus=loaded.corpus,
-                        schema_embeddings=loaded.embs,
-                    )
+                    hits = retriever.run(question=d["utterance"])
                     break
                 except Exception as exc:
                     if attempt == retries:

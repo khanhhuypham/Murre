@@ -36,7 +36,7 @@ from utils import logger
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Ô trạng thái rỗng — warmup_datasets() bên dưới sẽ đổ đầy.
     app.state.llm = None
-    app.state.datasets = {}      # Dataset -> LoadedDataset
+    app.state.datasets = {}      # Dataset -> MurreRetriever (ngậm sẵn corpus + embeddings)
     app.state.load_lock = asyncio.Lock()
     app.state.jobs = {}          # job_id -> PipelineJob
     app.state.job_tasks = {}     # job_id -> asyncio.Task (giữ ref để không bị GC)

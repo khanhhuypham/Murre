@@ -5,7 +5,7 @@ chỉ phụ thuộc vào logic của retriever.
 """
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 import pytest
 import torch
@@ -52,14 +52,25 @@ class ScriptedRewriter:
     # bản giả này thay được cả hai nửa của pha Removal.
 
 
-@pytest.fixture
-def embeddings() -> torch.Tensor:
-    return FakeEncoder().encode(texts=CORPUS)
-
-
-def _retriever(rewriter: ScriptedRewriter, beam: int = 2, hops: int = 2) -> MurreRetriever:
+def _retriever(
+    rewriter: ScriptedRewriter,
+    beam: int = 2,
+    hops: int = 2,
+    corpus: Optional[List[str]] = None,
+    embeddings: Optional[torch.Tensor] = None,
+) -> MurreRetriever:
+    """Retriever NGẬM SẴN corpus — bỏ trống thì dùng CORPUS chuẩn của file này."""
+    docs: List[str] = CORPUS if corpus is None else corpus
+    embs: torch.Tensor = (
+        FakeEncoder().encode(texts=docs) if embeddings is None else embeddings
+    )
     return MurreRetriever(
-        encoder=FakeEncoder(), rewriter=rewriter, beam_size=beam, max_hop=hops,
+        encoder=FakeEncoder(),
+        rewriter=rewriter,
+        beam_size=beam,
+        max_hop=hops,
+        corpus=docs,
+        embeddings=embs,
     )
 
 
@@ -68,40 +79,42 @@ def test_requires_a_rewriter_or_an_llm() -> None:
         MurreRetriever(encoder=FakeEncoder())
 
 
-def test_max_hop_one_returns_top_b_tables(embeddings: torch.Tensor) -> None:
+def test_max_hop_one_returns_top_b_tables() -> None:
     r = _retriever(rewriter=ScriptedRewriter(outputs=[]), beam=2, hops=1)
-    out = r.run(question="first", corpus=CORPUS, schema_embeddings=embeddings)
+    out = r.run(question="first")
     assert [t.schema for t in out][:1] == ["db.a(x)"]
     assert len(out) == 2  # beam_size bảng, không gọi LLM lần nào
 
 
-def test_second_hop_finds_a_table_the_first_hop_missed(embeddings: torch.Tensor) -> None:
+def test_second_hop_finds_a_table_the_first_hop_missed() -> None:
     rewriter = ScriptedRewriter(outputs=["second", "second"])
     r = _retriever(rewriter=rewriter, beam=1, hops=2)
 
-    out = r.run(question="first", corpus=CORPUS, schema_embeddings=embeddings)
+    out = r.run(question="first")
 
     assert {t.schema for t in out} == {"db.a(x)", "db.b(y)"}
     # §3.4: Removal luôn nhận CÂU HỎI GỐC + toàn bộ bảng trên đường đi.
     assert rewriter.calls == [["db.a(x)"]]
 
 
-def test_early_stop_freezes_the_branch_but_keeps_it_scored(
-    embeddings: torch.Tensor,
-) -> None:
+def test_early_stop_freezes_the_branch_but_keeps_it_scored() -> None:
     r = _retriever(rewriter=ScriptedRewriter(outputs=["None"]), beam=1, hops=3)
-    out = r.run(question="first", corpus=CORPUS, schema_embeddings=embeddings)
+    out = r.run(question="first")
     # Nhánh dừng ở hop 1 nhưng vẫn nằm trong all_paths → vẫn được xếp hạng.
     assert [t.schema for t in out] == ["db.a(x)"]
 
 
-def test_results_are_sorted_by_score_descending(embeddings: torch.Tensor) -> None:
+def test_results_are_sorted_by_score_descending() -> None:
     r = _retriever(rewriter=ScriptedRewriter(outputs=["second", "third"]), beam=2, hops=2)
-    out = r.run(question="first", corpus=CORPUS, schema_embeddings=embeddings)
+    out = r.run(question="first")
     assert [t.score for t in out] == sorted((t.score for t in out), reverse=True)
 
 
 def test_empty_corpus_returns_nothing() -> None:
-    r = _retriever(rewriter=ScriptedRewriter(outputs=[]))
-    out = r.run(question="first", corpus=[], schema_embeddings=torch.empty(0, 3))
+    r = _retriever(
+        rewriter=ScriptedRewriter(outputs=[]),
+        corpus=[],
+        embeddings=torch.empty(0, 3),
+    )
+    out = r.run(question="first")
     assert out == []
