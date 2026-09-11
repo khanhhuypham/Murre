@@ -1,8 +1,8 @@
 """Chọn encoder và gộp token — không tải model thật.
 
-build_encoder() là NƠI DUY NHẤT quyết định dùng lớp nào. Chọn nhầm lớp không nổ
-lỗi, chỉ ra vector vô nghĩa (SPECB áp lên model BERT, hay bỏ tiền tố "query: "
-của E5), nên phần đáng test nhất là cái quyết định đó.
+SentenceEncoder.get() là NƠI DUY NHẤT nối config với class. Khai sai `type` không nổ
+lỗi ở tầng dưới, chỉ ra vector vô nghĩa (bỏ tiền tố "query: " của E5 chẳng hạn),
+nên phần đáng test nhất là cái quyết định đó.
 """
 from __future__ import annotations
 
@@ -15,11 +15,21 @@ import core.encoder as encoder_module
 from config import cfg
 from core.encoder import (
     SentenceEncoder,
-    SGPTEncoder,
     _encode_batched,
-    build_encoder,
     plan_batches,
 )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_encoder_cache():
+    """SentenceEncoder.get() giữ một instance cho mỗi profile suốt đời tiến trình.
+
+    Không xoá thì test đếm số lần nạp model sẽ đo nhờ kết quả của test chạy
+    trước — và đo cả hai đầu vì thứ tự test đổi là con số đổi theo.
+    """
+    SentenceEncoder.reset_cache()
+    yield
+    SentenceEncoder.reset_cache()
 
 
 @pytest.fixture
@@ -33,7 +43,7 @@ def encoder_cfg():
 
 
 class _StubLoad:
-    """Thay _load() để build_encoder() chạy được mà không tải model từ HuggingFace."""
+    """Thay _load() để .get() chạy được mà không tải model từ HuggingFace."""
 
     def __init__(self) -> None:
         self.seen: List[str] = []
@@ -43,43 +53,48 @@ class _StubLoad:
         return object(), object(), "cpu"
 
 
-def test_type_sgpt_builds_the_paper_encoder(encoder_cfg, monkeypatch) -> None:
+def test_get_returns_the_sentence_encoder(monkeypatch) -> None:
+    """Việc kiểm `type` nằm ở tầng config (xem test_config.py), không phải ở đây."""
     monkeypatch.setattr(encoder_module, "_load", _StubLoad())
-    monkeypatch.setattr(SGPTEncoder, "_encode_single_char_as_token_id", lambda self, char: 1)
-    encoder_cfg.type = "sgpt"
-    assert isinstance(build_encoder(), SGPTEncoder)
-
-
-def test_type_sentence_builds_the_multilingual_encoder(encoder_cfg, monkeypatch) -> None:
-    monkeypatch.setattr(encoder_module, "_load", _StubLoad())
-    encoder_cfg.type = "sentence"
-    assert isinstance(build_encoder(), SentenceEncoder)
-
-
-def test_unknown_type_fails_loudly_with_the_valid_ones(encoder_cfg, monkeypatch) -> None:
-    monkeypatch.setattr(encoder_module, "_load", _StubLoad())
-    encoder_cfg.type = "phobert"
-    with pytest.raises(ValueError, match="sentence"):
-        build_encoder()
+    assert isinstance(SentenceEncoder.get(), SentenceEncoder)
 
 
 def test_model_name_comes_from_the_dataset_profile(encoder_cfg, monkeypatch) -> None:
     stub = _StubLoad()
     monkeypatch.setattr(encoder_module, "_load", stub)
-    encoder_cfg.type = "sentence"
     encoder_cfg.model_name = "intfloat/multilingual-e5-base"
 
-    build_encoder(dataset="spider")
+    SentenceEncoder.get(dataset="spider")
     assert stub.seen == ["intfloat/multilingual-e5-base"]
 
 
-def test_each_dataset_builds_its_own_encoder_class(monkeypatch) -> None:
-    """Không còn encoder toàn cục: dataset nào ra lớp của dataset đó."""
-    monkeypatch.setattr(encoder_module, "_load", _StubLoad())
-    monkeypatch.setattr(SGPTEncoder, "_encode_single_char_as_token_id", lambda self, char: 1)
+def test_every_dataset_builds_an_encoder(monkeypatch) -> None:
+    """Mỗi dataset phải trỏ tới một profile CÓ THẬT với `type` hợp lệ.
 
-    assert isinstance(build_encoder(dataset="spider"), SGPTEncoder)
-    assert isinstance(build_encoder(dataset="vitext2sql"), SentenceEncoder)
+    Dataset trỏ vào profile đã bị xoá thì chỉ nổ lúc chạy thật, sau khi đã nạp
+    xong dữ liệu — bắt ở đây rẻ hơn nhiều.
+    """
+    stub = _StubLoad()
+    monkeypatch.setattr(encoder_module, "_load", stub)
+
+    for ds in ("spider", "bird", "vitext2sql"):
+        assert isinstance(SentenceEncoder.get(dataset=ds), SentenceEncoder)
+
+
+def test_datasets_sharing_a_profile_share_the_encoder(monkeypatch) -> None:
+    """Cả ba dataset cùng trỏ `multilingual` → nạp model ĐÚNG MỘT LẦN.
+
+    Đây là lý do .get() có cache: mỗi bản SentenceEncoder giữ ~1.1GB
+    trong RAM, ba bản giống hệt nhau là thừa 2.2GB. Nạp mấy lần thì không có lỗi
+    nào nổ ra, chỉ thấy RAM cao và khởi động lâu — nên phải chốt bằng test.
+    """
+    stub = _StubLoad()
+    monkeypatch.setattr(encoder_module, "_load", stub)
+
+    encoders = [SentenceEncoder.get(dataset=ds) for ds in ("spider", "bird", "vitext2sql")]
+
+    assert len(stub.seen) == 1
+    assert encoders[0] is encoders[1] is encoders[2]
 
 
 # --- mean pooling ----------------------------------------------------------

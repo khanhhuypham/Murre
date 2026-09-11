@@ -23,7 +23,7 @@ import torch
 
 from config import cfg
 from core.corpus import build_corpus, load_embeddings
-from core.encoder import build_encoder
+from core.encoder import SentenceEncoder
 from enums import Dataset
 from models.errors import AppError
 from models.metrics import MetricScores
@@ -70,7 +70,7 @@ def cmd_embed(args: argparse.Namespace) -> None:
     """
     with override_dataset(dataset=args.dataset):
         corpus: List[str] = build_corpus()
-        embs: torch.Tensor = load_embeddings(encoder=build_encoder(), corpus=corpus)
+        embs: torch.Tensor = load_embeddings(encoder=SentenceEncoder.get(), corpus=corpus)
         print(
             f"  {len(corpus)} schema | embeddings {tuple(embs.shape)} "
             f"→ {cfg.outputs.embeddings_cache()}"

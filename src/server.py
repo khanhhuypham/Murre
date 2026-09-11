@@ -35,7 +35,6 @@ from utils import logger
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Ô trạng thái rỗng — warmup_datasets() bên dưới sẽ đổ đầy.
-    app.state.encoders = {}      # tên profile -> Encoder (dùng chung giữa dataset)
     app.state.llm = None
     app.state.datasets = {}      # Dataset -> LoadedDataset
     app.state.load_lock = asyncio.Lock()

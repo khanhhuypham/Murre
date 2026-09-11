@@ -57,7 +57,7 @@ import torch
 import torch.nn.functional as F
 
 from config import cfg
-from core.encoder import Encoder
+from core.encoder import SentenceEncoder
 from core.llm import LLMGenerator
 from core.rewriter import QueryRewriter
 from models.retrieval import RetrievedTable
@@ -109,7 +109,7 @@ class MurreRetriever:
 
     def __init__(
         self,
-        encoder: Encoder,
+        encoder: SentenceEncoder,
         rewriter: Optional[QueryRewriter] = None,
         llm: Optional[LLMGenerator] = None,
         *,
@@ -121,7 +121,7 @@ class MurreRetriever:
                 "MurreRetriever cần `rewriter` hoặc `llm` cho pha Removal (§3.4)."
             )
 
-        self.encoder: Encoder = encoder
+        self.encoder: SentenceEncoder = encoder
         self.llm: Optional[LLMGenerator] = llm
         self.rewriter: QueryRewriter = (
             rewriter if rewriter is not None else QueryRewriter(llm=llm)

@@ -9,7 +9,6 @@ from typing import List
 from starlette.datastructures import State
 
 from config import cfg
-from core.encoder import build_encoder
 from core.llm import LLMGenerator
 from enums import Dataset
 from models.errors import AppError
@@ -18,26 +17,23 @@ from utils import logger
 
 
 def _build_for_state(state: State, ds_name: Dataset) -> LoadedDataset:
-    """Ráp 1 dataset bằng encoder/LLM của server — phần ráp ở pipeline/factory.py.
+    """Ráp 1 dataset bằng LLM của server — phần ráp ở pipeline/factory.py.
 
-    Việc riêng của server là VÒNG ĐỜI: encoder/LLM tạo một lần rồi giữ trong
-    app.state cho MỌI dataset dùng chung, nên phải tạo ở đây rồi truyền xuống.
+    Việc riêng của server là VÒNG ĐỜI của LLM: tạo một lần rồi giữ trong app.state
+    cho MỌI dataset dùng chung, nên phải tạo ở đây rồi truyền xuống.
+
+    Encoder KHÔNG cần giữ ở đây nữa: SentenceEncoder.get() đã dùng lại instance
+    theo tên profile, nên build_dataset() tự gọi là đủ — cả ba dataset cùng trỏ
+    `multilingual` vẫn chỉ nạp model một lần. Giữ thêm một dict trong app.state
+    chỉ là cache thứ hai khoá y hệt cache thứ nhất.
     """
-    # Encoder gắn với DATASET, nhưng nhiều dataset dùng chung một profile
-    # (spider và bird cùng `sgpt`) — cache theo tên profile để model chỉ nạp một
-    # lần, thay vì mỗi dataset một bản trong RAM.
-    profile_name: str = cfg.dataset_config(ds_name).encoder
-    if profile_name not in state.encoders:
-        state.encoders[profile_name] = build_encoder(dataset=ds_name)
     if state.llm is None:
         state.llm = LLMGenerator()
 
-    loaded: LoadedDataset = build_dataset(
-        dataset=ds_name, encoder=state.encoders[profile_name], llm=state.llm,
-    )
+    loaded: LoadedDataset = build_dataset(dataset=ds_name, llm=state.llm)
     logger.info(
         f"[API] Đã nạp dataset '{ds_name}' ({len(loaded.corpus)} schemas, "
-        f"encoder '{profile_name}')"
+        f"encoder '{cfg.dataset_config(ds_name).encoder}')"
     )
     return loaded
 

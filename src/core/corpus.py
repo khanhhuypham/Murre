@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 import torch
 
 from config import cfg
-from core.encoder import Encoder
+from core.encoder import SentenceEncoder
 from dataset.loader import load_tables
 from utils import logger
 from utils.schema import build_schema_corpus
@@ -44,7 +44,7 @@ def corpus_fingerprint(corpus: List[str], model_name: str) -> str:
 
 
 def load_embeddings(
-    encoder: Encoder,
+    encoder: SentenceEncoder,
     corpus: List[str],
     dataset: Optional[str] = None,
 ) -> torch.Tensor:
