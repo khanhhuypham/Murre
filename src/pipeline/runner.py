@@ -4,18 +4,8 @@
     run_pipeline()      cả dev.json, ghi result + score. POST /pipeline/run và
                         `python -m cli run` đều gọi hàm này.
 
-Chạy một dataset khác mặc định phải ghi đè `cfg.general.dataset` (xem
-override_dataset). `cfg` là biến toàn cục của process, nên:
-
-  - Chỉ cho phép MỘT lần chạy tại một thời điểm (_RUN_LOCK): hai lượt chạy song
-    song sẽ giành nhau đúng một biến đó.
-  - Trong lúc chạy, mọi chỗ đọc general.dataset NGẦM đều thấy giá trị tạm —
-    GET /config, và các dòng log in dataset đang chọn.
-
-/retrieve và /sql KHÔNG bị ảnh hưởng kết quả: chúng truyền dataset tường minh
-suốt từ router xuống (require_dataset → for_dataset → build_corpus /
-load_embeddings / QueryRewriter), và retriever đã nạp thì giữ sẵn corpus +
-prompt của dataset nó, không hỏi lại cfg lúc chạy.
+Chạy dataset khác mặc định thì ghi đè `cfg.general.dataset` (override_dataset).
+`cfg` là biến toàn cục nên mỗi lúc chỉ cho phép MỘT lần chạy (_RUN_LOCK).
 """
 from __future__ import annotations
 
@@ -47,10 +37,9 @@ ProgressFn = Callable[[int, int], None]
 
 @contextmanager
 def override_dataset(dataset: Optional[Dataset] = None) -> Iterator[None]:
-    """Tạm ghi đè general.dataset cho một lần chạy rồi trả lại nguyên trạng.
+    """Tạm ghi đè general.dataset rồi trả lại nguyên trạng.
 
-    general.dataset được đọc NGẦM ở nhiều chỗ (template đường dẫn trong PathsConfig,
-    dataset/loader.py), nên chạy dataset khác mặc định phải đi qua đây.
+    general.dataset được đọc ngầm ở template đường dẫn và dataset/loader.py.
     """
     if dataset is None:
         yield
@@ -82,13 +71,11 @@ def run_one_question(
         verbose     : in chi tiết từng hop
         llm_profile : None → dùng llm.active_profile
 
-    KHÔNG có tham số `dataset`: chọn dataset bằng cách bọc lời gọi trong
-    override_dataset() — cli.py làm đúng vậy cho cờ `--dataset`.
+    Chọn dataset bằng cách bọc lời gọi trong override_dataset().
     """
     q: str = resolve_question(question=question)
 
-    # Dựng LLM TRƯỚC corpus: endpoint chưa bật thì hỏng ngay, không mất công
-    # encode cả corpus rồi mới báo lỗi. profile=None → llm.active_profile.
+    # Dựng LLM trước corpus: endpoint chưa bật thì hỏng ngay.
     retriever: MurreRetriever = MurreRetriever.for_dataset(
         llm=LLMGenerator(profile=llm_profile),
     )
@@ -125,12 +112,7 @@ def run_pipeline(
 
 
 def _run_fingerprint() -> Dict[str, Any]:
-    """Các tham số mà đổi đi thì kết quả đã lưu trong checkpoint không dùng lại được.
-
-    Đường dẫn checkpoint đã có dataset/model/max_hop, nhưng beam_size hay LLM thì
-    không nằm trong tên file — đổi chúng mà vẫn nối tiếp checkpoint cũ là trộn hai
-    cấu hình vào một bảng điểm.
-    """
+    """Tham số mà đổi đi thì checkpoint cũ không dùng lại được."""
     return {
         "dataset": cfg.general.dataset,
         "encoder": cfg.encoder_for().model_name,
@@ -193,15 +175,13 @@ def _run_locked(
     if total == 0:
         raise AppError.bad_request(message="dev.json rỗng — không có câu hỏi nào để chạy.")
 
-    # Checkpoint đọc TRƯỚC khi dựng retriever: chạy lại một lượt đã xong thì không
-    # phải nạp encoder/LLM/corpus làm gì.
+    # Đọc checkpoint trước khi dựng retriever: lượt đã xong thì khỏi nạp model.
     ckpt_file: str = cfg.outputs.checkpoint()
     fingerprint: Dict[str, Any] = _run_fingerprint()
     done: Dict[int, ResultRecord] = _load_checkpoint(path=ckpt_file, fingerprint=fingerprint)
     todo: List[int] = [i for i in range(total) if i not in done]
 
-    # Báo tiến độ NGAY, trước khi nạp model: chạy lại một lượt đã xong thì vòng lặp
-    # dưới không quay lần nào và job sẽ báo 0/0 dù thực ra đã đủ.
+    # Báo tiến độ trước khi nạp model, kẻo lượt đã xong bị báo 0/0.
     if on_progress is not None:
         on_progress(len(done), total)
 
@@ -224,8 +204,7 @@ def _run_locked(
         for n, idx in enumerate(todo, start=1):
             d: Dict[str, Any] = dev[idx]
 
-            # Một lượt đầy đủ là hàng nghìn lần gọi LLM; timeout/429/Ollama bận là
-            # chuyện thường. Thử lại từng câu thay vì để hỏng cả lượt chạy.
+            # Thử lại từng câu thay vì để hỏng cả lượt chạy.
             hits: Optional[List[RetrievedTable]] = None
             for attempt in range(1, retries + 1):
                 try:
@@ -250,14 +229,14 @@ def _run_locked(
             record = ResultRecord(
                 utterance=d["utterance"],
                 gold=d.get("rel_schema", []),
-                # to_rows(): đánh số rank + đổi khóa `score` → `similarity` của file format.
+                # to_rows(): đánh số rank + đổi khóa `score` → `similarity`.
                 retrieved=RetrievedTable.to_rows(tables=hits),
             )
             done[idx] = record
             ckpt.write(json.dumps(
                 {"index": idx, "record": record.to_dict()}, ensure_ascii=False,
             ) + "\n")
-            ckpt.flush()  # flush từng câu: tắt máy giữa chừng vẫn giữ được
+            ckpt.flush()  # flush từng câu để tắt máy giữa chừng vẫn giữ được
 
             if on_progress is not None:
                 on_progress(len(done), total)

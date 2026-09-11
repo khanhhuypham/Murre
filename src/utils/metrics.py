@@ -14,20 +14,10 @@ from models.records import ResultRecord
 
 
 def compute_recall(pred_list: List[str], gold_list: List[str]) -> float:
-    """
-    Tính recall = số bảng đúng tìm được / tổng số bảng đúng.
-
-    Tham số:
-        pred_list : danh sách schema dự đoán (có thứ tự)
-        gold_list : danh sách schema đúng (ground truth)
-
-    Trả về:
-        Giá trị recall trong [0, 1]
-    """
+    """recall = số bảng đúng tìm được / tổng số bảng đúng, trong [0, 1]."""
     if not gold_list:
         return 0.0
-    # Đếm theo TẬP HỢP: nếu pred_list lỡ có bảng trùng lặp thì đếm tuyến tính sẽ
-    # cho recall > 1.
+    # Đếm theo tập hợp: pred_list trùng lặp thì đếm tuyến tính sẽ cho recall > 1.
     return len(set(pred_list) & set(gold_list)) / len(gold_list)
 
 
@@ -36,15 +26,9 @@ def compute_recall_at_k(
     pred_list: List[str],
     gold_list: List[str],
 ) -> Dict[int, float]:
-    """
-    Tính recall@K cho nhiều giá trị K cùng lúc.
+    """recall@K cho nhiều K cùng lúc → {K: recall}.
 
-    Trả về:
-        {K: recall_value} cho mỗi K trong top_k
-
-    KHÔNG bỏ qua các K lớn hơn len(pred_list): `pred_list[:k]` tự cắt đúng khi danh
-    sách ngắn hơn K, còn bỏ đi thì compute_res() cộng 0.0 cho câu đó và recall@K bị
-    tính thấp hơn thực tế.
+    K lớn hơn len(pred_list) vẫn tính: `pred_list[:k]` tự cắt đúng.
     """
     return {k: compute_recall(pred_list[:k], gold_list) for k in top_k}
 
@@ -54,14 +38,7 @@ def compute_complete_recall_at_k(
     pred_list: List[str],
     gold_list: List[str],
 ) -> Dict[int, float]:
-    """
-    Tính complete recall (k=K): 1 nếu TẤT CẢ bảng đúng đều có trong top-K, 0 nếu không.
-    Đây là metric nghiêm ngặt hơn recall@K, quan trọng trong text-to-SQL
-    vì thiếu 1 bảng là không sinh được SQL đúng.
-
-    Trả về:
-        {K: 1.0 hoặc 0.0} cho mỗi K trong top_k
-    """
+    """complete recall: 1.0 nếu TẤT CẢ bảng đúng đều trong top-K, else 0.0."""
     em: Dict[int, float] = {k: 0.0 for k in top_k}
     for k in top_k:
         if set(gold_list).issubset(set(pred_list[:k])):
@@ -73,16 +50,10 @@ def compute_res(
     top_k: List[int],
     data: List[ResultRecord],
 ) -> MetricScores:
-    """
-    Tính trung bình recall@K và complete recall=K trên toàn bộ dataset.
+    """Trung bình recall@K và complete recall=K trên toàn bộ dataset.
 
-    Tham số:
-        top_k : danh sách các giá trị K (ví dụ: [3, 5, 10, 20])
-        data  : các record của file turn{H}/dev.json — xem models/records.py.
-                Đọc từ file thì dùng ResultRecord.from_list(json.load(f)).
-
-    Trả về:
-        MetricScores(recall={K: ...}, complete_recall={K: ...}) — xem models/metrics.py.
+        top_k : danh sách các K, ví dụ [3, 5, 10, 20]
+        data  : record của turn{H}/dev.json (xem models/records.py)
     """
     recall_sum:   Dict[int, float] = {k: 0.0 for k in top_k}
     complete_sum: Dict[int, float] = {k: 0.0 for k in top_k}

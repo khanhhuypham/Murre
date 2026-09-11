@@ -1,15 +1,9 @@
 """api/jobs.py — Thân của một lần chạy pipeline dưới dạng job trong RAM.
 
-`cfg` là biến toàn cục của process nên mỗi lúc chỉ chạy được MỘT job. CHẶN Ở HAI
-TẦNG, cố ý:
+Mỗi lúc chỉ chạy được MỘT job, chặn ở hai tầng: router /pipeline/run trả 409
+sớm, và runner._RUN_LOCK là chốt thật (run_pipeline còn gọi từ CLI).
 
-    router /pipeline/run    từ chối sớm (409) khi còn job chưa kết thúc — người
-                            gọi biết ngay, không phải đợi rồi mới thấy job FAILED.
-    runner._RUN_LOCK        chốt thật, vì run_pipeline() còn được gọi từ CLI chứ
-                            không riêng router; nó ném AppError.pipeline_busy().
-
-Job chỉ nằm trong RAM (app.state.jobs) — restart service là mất. Kết quả thì đã
-ghi ra đĩa, tra lại bằng /evaluate.
+Job chỉ nằm trong RAM — restart service là mất; kết quả đã ghi ra đĩa.
 """
 from __future__ import annotations
 
@@ -31,11 +25,9 @@ def now() -> str:
 
 
 def run_job(state: State, job_id: str, req: PipelineRunRequest) -> None:
-    """Thân của một job — chạy trong thread riêng (không chạm event loop).
+    """Thân của một job — chạy trong thread riêng, KHÔNG ném lỗi ra ngoài.
 
-    KHÔNG ném ra ngoài: mọi lỗi được ghi vào `job.status` + `job.error` rồi nuốt.
-    Chỗ gọi (`await task` trong /pipeline/run khi wait=true) vì vậy luôn chạy tới
-    nơi; muốn biết chạy được hay không thì đọc `job.status`, đừng bắt exception.
+    Mọi lỗi ghi vào `job.status` + `job.error`; chỗ gọi đọc status, đừng bắt.
     """
     job: PipelineJob = state.jobs[job_id]
     job.status = JobStatus.RUNNING
@@ -48,8 +40,7 @@ def run_job(state: State, job_id: str, req: PipelineRunRequest) -> None:
     try:
         # Không truyền model: encoder do server quyết định (xem PipelineRunRequest).
         run_pipeline(dataset=req.dataset, limit=req.limit, on_progress=on_progress)
-        # Đọc lại metric bằng đúng đường code của /evaluate → hai endpoint không thể
-        # lệch số nhau, và cũng xác nhận file vừa ghi đọc được thật.
+        # Đọc lại metric bằng đúng đường code của /evaluate.
         job.result = evaluate_run(
             dataset=req.dataset,
             model=cfg.encoder_for(dataset=req.dataset).slug,

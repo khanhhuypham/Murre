@@ -1,14 +1,12 @@
 # =============================================================================
 # core/rewriter.py — pha Removal của MURRE (§3.4)
 #
-# LLM được yêu cầu nói ra BẢNG CÒN THIẾU dựa trên câu hỏi gốc và các bảng đã tìm
-# được, rồi lấy chuỗi đó đi retrieve hop kế.
+# LLM nói ra BẢNG CÒN THIẾU dựa trên câu hỏi gốc + bảng đã tìm được, rồi lấy
+# chuỗi đó đi retrieve hop kế. Trả "None" → nhánh đó dừng sớm (Early Stop).
 #
 #   Câu hỏi: "Which airlines fly to AHD?"
 #   Đã có:   flight_2.flights(airline, source, destination)
 #   LLM trả: flight_2.airlines(airline id, airline name, country)
-#
-# LLM trả "None" → đã đủ bảng, nhánh đó dừng sớm (Early Stop).
 # =============================================================================
 from __future__ import annotations
 
@@ -20,10 +18,9 @@ from utils import logger
 
 
 class QueryRewriter:
-    """Pha Removal: (câu hỏi gốc + bảng đã có) → bảng còn thiếu, hoặc mẫu Early Stop.
+    """Pha Removal: (câu hỏi gốc + bảng đã có) → bảng còn thiếu, hoặc Early Stop.
 
-    Ba hằng số dưới đây là tham số của pha Removal. Kế thừa class rồi ghi đè chúng
-    là đổi được hành vi, không phải sửa thân hàm.
+    Ba hằng số dưới đây là tham số của pha Removal, ghi đè được bằng kế thừa.
     """
 
     # Các mẫu LLM dùng để báo "đã đủ bảng". Khớp từ ĐẦU DÒNG — xem is_early_stop().
@@ -35,11 +32,11 @@ class QueryRewriter:
         "None",
     ]
 
-    # Model hay chép lại nhãn cuối prompt trước khi trả lời; cắt đi kẻo lẫn vào query.
+    # Nhãn model hay chép lại trước khi trả lời; cắt đi kẻo lẫn vào query.
     _ECHO_PREFIXES: List[str] = ["Completing Tables:", "Rewritten Question:"]
 
-    # Prompt là few-shot dạng completion, các ví dụ cách nhau một dòng trống. Thiếu
-    # stop này thì model sinh tiếp khối "Question:" kế rồi tự bịa và tự trả lời thêm.
+    # Prompt few-shot dạng completion: thiếu stop này thì model sinh tiếp khối
+    # "Question:" kế rồi tự bịa và tự trả lời thêm.
     _STOP_SEQUENCES: List[str] = ["\n\n"]
 
     _MAX_TOKENS: int = 256
@@ -47,8 +44,7 @@ class QueryRewriter:
     def __init__(self, llm: LLMGenerator, dataset: Optional[str] = None) -> None:
         """dataset=None → prompt của general.dataset đang chọn.
 
-        Truyền tường minh khi phục vụ nhiều dataset trong một process (API): prompt
-        phải khớp dataset của corpus, không phải dataset mặc định của config.
+        Prompt phải khớp dataset của corpus, nên API luôn truyền tường minh.
         """
         self.llm: LLMGenerator = llm
 
@@ -64,10 +60,10 @@ class QueryRewriter:
             question          : CÂU HỎI GỐC, không đổi qua các hop.
             retrieved_schemas : TOÀN BỘ bảng trên đường đi, tích luỹ từ hop 1.
 
-        Trả về chuỗi thô của LLM; việc phán có dừng sớm là của is_early_stop().
+        Trả về chuỗi thô; phán dừng sớm là việc của is_early_stop().
         """
-        # Dấu ngăn là 2 ký tự \ và n VIẾT RA, không phải xuống dòng — cả khối
-        # `Database:` nằm trên MỘT dòng. Sửa " \\n " thành " \n " là prompt vỡ ngay.
+        # Dấu ngăn là 2 ký tự \ và n VIẾT RA, không phải xuống dòng: cả khối
+        # `Database:` nằm trên MỘT dòng.
         database_field: str = " \\n ".join(retrieved_schemas)
 
         prompt: str = self.prompt_template.format(question=question, database=database_field)
@@ -82,9 +78,8 @@ class QueryRewriter:
     def is_early_stop(cls, rewrite_output: str) -> bool:
         """Output của LLM có phải tín hiệu dừng sớm không — §3.4.
 
-        Chỉ xét DÒNG ĐẦU và phải khớp từ đầu dòng: quét cả output bằng `in` thì một
-        danh sách bảng hợp lệ có chữ "None" nằm đâu đó ở giữa cũng bị hiểu là dừng
-        sớm — model nhỏ dính lỗi này liên tục.
+        Chỉ xét DÒNG ĐẦU và khớp từ đầu dòng, kẻo danh sách bảng hợp lệ có chữ
+        "None" ở giữa cũng bị hiểu là dừng sớm.
         """
         cleaned: str = cls._strip_echo(text=rewrite_output)
         lines: List[str] = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]

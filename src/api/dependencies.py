@@ -1,13 +1,7 @@
 """api/dependencies.py — Vòng đời dataset của service: nạp một lần, dùng lại.
 
-Giữ trong app.state một MurreRetriever cho mỗi dataset (retriever đã ngậm sẵn
-corpus + embeddings) và MỘT LLMGenerator dùng chung cho mọi dataset.
-
-Encoder KHÔNG nằm ở đây: SentenceEncoder.get() tự dùng lại instance theo tên
-profile. Phần ráp cũng không nằm ở đây — nó ở MurreRetriever.for_dataset().
-
-Ngoài vòng đời, file này còn trả lời "service được phép phục vụ dataset nào"
-(configured_datasets / available_datasets / require_dataset) và chạy warm-up.
+Giữ trong app.state một MurreRetriever cho mỗi dataset và MỘT LLMGenerator dùng
+chung. Ngoài ra trả lời "service phục vụ dataset nào" và chạy warm-up.
 """
 from __future__ import annotations
 
@@ -27,16 +21,7 @@ from utils import logger
 
 
 def _build_for_state(state: State, ds_name: Dataset) -> MurreRetriever:
-    """Ráp 1 dataset bằng LLM của server — phần ráp ở MurreRetriever.for_dataset().
-
-    Việc riêng của server là VÒNG ĐỜI của LLM: tạo một lần rồi giữ trong app.state
-    cho MỌI dataset dùng chung, nên phải tạo ở đây rồi truyền xuống.
-
-    Encoder KHÔNG cần giữ ở đây nữa: SentenceEncoder.get() đã dùng lại instance
-    theo tên profile, nên for_dataset() tự gọi là đủ — cả ba dataset cùng trỏ
-    `multilingual` vẫn chỉ nạp model một lần. Giữ thêm một dict trong app.state
-    chỉ là cache thứ hai khoá y hệt cache thứ nhất.
-    """
+    """Ráp 1 dataset bằng LLM dùng chung trong app.state."""
     if state.llm is None:
         state.llm = LLMGenerator()
 

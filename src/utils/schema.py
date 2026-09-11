@@ -1,15 +1,10 @@
 # =============================================================================
-# utils/schema.py — Các hàm xử lý schema bảng SQL
+# utils/schema.py — Xử lý schema bảng SQL
 #
-# Gồm 3 nhóm, đúng thứ tự xuất hiện bên dưới:
-#   1. build_schema_corpus()       → danh sách schema phẳng cho retrieval
-#      build_db_index()            → {db_id: db_dict} để tra nhanh khi sinh SQL
-#   2. filter_ret_tables_from_db() → lọc DB dict chỉ giữ các bảng đã retrieve
-#   3. pack_table()                → render DB dict thành CREATE TABLE SQL
-#
-# Nhóm 2 và 3 chỉ dùng ở pipeline/sql.py (bước sinh SQL); nhóm 1 dùng ở core/corpus.py.
-#
-# Trung thành với implement của tác giả trong retrieve/utils.py
+#   build_schema_corpus()       → danh sách schema phẳng cho retrieval
+#   build_db_index()            → {db_id: db_dict}
+#   filter_ret_tables_from_db() → lọc DB dict chỉ giữ các bảng đã retrieve
+#   pack_table()                → render DB dict thành CREATE TABLE SQL
 # =============================================================================
 
 
@@ -22,32 +17,19 @@ from typing import Any, Dict, List
 # =============================================================================
 
 def build_schema_corpus(tables: List[Dict[str, Any]]) -> List[str]:
-    """
-    Trích xuất danh sách phẳng các chuỗi schema từ tables.json.
+    """Danh sách phẳng schema từ tables.json.
 
-    Mỗi chuỗi có dạng: "db_id.table_name(col1, col2, ...)"
-    Ví dụ: "concert_singer.singer(singer_id, name, country, age)"
-
-    Tham số:
-        tables : danh sách DB dict đọc từ tables.json
-
-    Trả về:
-        Danh sách phẳng tất cả schema strings của mọi bảng trong mọi DB
+    Mỗi chuỗi dạng "db_id.table_name(col1, col2, ...)".
     """
     corpus: List[str] = []
     for db in tables:
-        # Mỗi DB dict có trường "schema" chứa danh sách chuỗi schema đã build sẵn
         for schema_str in db.get("schema", []):
             corpus.append(schema_str)
     return corpus
 
 
 def build_db_index(tables: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """
-    Tạo dictionary {db_id: db_dict} để tra cứu nhanh theo tên DB.
-
-    Dùng trong bước sinh SQL để pack CREATE TABLE từ bảng đã retrieve.
-    """
+    """{db_id: db_dict} để tra cứu nhanh theo tên DB."""
     return {d["db_id"]: d for d in tables}
 
 
@@ -56,11 +38,7 @@ def build_db_index(tables: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
 # =============================================================================
 
 def _re_index(index_map: List[int], ind: int) -> int:
-    """
-    Tính lại chỉ số sau khi lọc.
-    ind = -1 (cột ảo "*") → giữ nguyên -1
-    Ngược lại → tìm vị trí mới trong index_map
-    """
+    """Tính lại chỉ số sau khi lọc; -1 (cột ảo "*") giữ nguyên."""
     if ind == -1:
         return -1
     return index_map.index(ind)
@@ -71,19 +49,9 @@ def filter_ret_tables_from_db(
     db_id:          str,
     ret_tables_list: List[str],
 ) -> Dict[str, Any]:
-    """
-    Lọc DB dict để chỉ giữ lại các bảng trong ret_tables_list.
-    Đồng thời cập nhật lại chỉ số cột, khóa chính, khóa ngoại.
+    """Lọc DB dict chỉ giữ bảng trong ret_tables_list.
 
-    Trung thành với filter_ret_tables_from_db() của tác giả trong retrieve/utils.py.
-
-    Tham số:
-        db_dict         : DB dict gốc từ tables.json
-        db_id           : tên database (để log lỗi)
-        ret_tables_list : danh sách tên bảng cần giữ lại
-
-    Trả về:
-        DB dict mới chỉ chứa các bảng trong ret_tables_list
+    Cập nhật lại chỉ số cột, khóa chính, khóa ngoại theo vị trí mới.
     """
     if db_dict is None:
         raise ValueError(f"db_dict là None với db_id={db_id}")
@@ -102,43 +70,38 @@ def filter_ret_tables_from_db(
         if t_idx in table_ids or t_idx == -1
     ]
 
-    # Cập nhật column_names: chỉ giữ cột thuộc bảng đã lọc
-    # Tính lại table_idx theo vị trí mới trong table_ids
+    # Giữ cột thuộc bảng đã lọc, tính lại table_idx theo vị trí mới
     ndb["column_names"] = [
         [_re_index(index_map=table_ids, ind=t_idx), col_name]
         for t_idx, col_name in db_dict["column_names"]
         if t_idx in table_ids or t_idx == -1
     ]
 
-    # Cập nhật column_types tương ứng
     ndb["column_types"] = [
         ct for i, ct in enumerate(db_dict["column_types"])
         if i in col_ids
     ]
 
-    # Cập nhật column_names_original (tên cột gốc không lowercase)
     ndb["column_names_original"] = [
         [_re_index(index_map=table_ids, ind=t_idx), col_name]
         for t_idx, col_name in db_dict["column_names_original"]
         if t_idx in table_ids or t_idx == -1
     ]
 
-    # Cập nhật primary_keys: chỉ giữ khóa chính của bảng đã lọc
-    # Tính lại chỉ số theo col_ids mới
+    # Khóa chính của bảng đã lọc, tính lại chỉ số theo col_ids mới
     ndb["primary_keys"] = [
         _re_index(index_map=col_ids, ind=pk)
         for pk in db_dict["primary_keys"]
         if pk in col_ids
     ]
 
-    # Cập nhật foreign_keys: chỉ giữ khóa ngoại trong nội bộ bảng đã lọc
+    # Chỉ giữ khóa ngoại trong nội bộ bảng đã lọc
     ndb["foreign_keys"] = [
         [_re_index(index_map=col_ids, ind=from_idx), _re_index(index_map=col_ids, ind=to_idx)]
         for from_idx, to_idx in db_dict["foreign_keys"]
         if from_idx in col_ids and to_idx in col_ids
     ]
 
-    # Cập nhật tên bảng
     ndb["table_names_original"] = [
         name for i, name in enumerate(db_dict["table_names_original"])
         if i in table_ids

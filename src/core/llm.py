@@ -20,15 +20,9 @@ from utils import logger
 
 
 class LLMGenerator:
-    """Gọi LLM qua SDK OpenAI, đọc base_url/model_name từ profile trong config.
+    """Gọi LLM qua SDK OpenAI, đọc cấu hình từ profile trong config.
 
-    Khóa API KHÔNG quyết định ở đây: hỏi profile qua resolve_api_key(), cũng là
-    chỗ quyết định endpoint local được miễn khóa. Tương tự `is_local` — suy từ
-    base_url, và suy ở LLMProfileConfig chứ không phải ở lớp này.
-
-    Việc riêng của lớp này với endpoint local là CHẨN ĐOÁN: thử kết nối trước khi
-    gọi, và mọi lỗi đều kèm gợi ý sửa — đó là chỗ hay quên bật server hoặc quên
-    pull model.
+    Với endpoint local: thử kết nối trước khi gọi, và mọi lỗi đều kèm gợi ý sửa.
     """
 
     def __init__(self, profile: Optional[str] = None) -> None:
@@ -42,13 +36,10 @@ class LLMGenerator:
         self.base_url: Optional[str] = profile_cfg.base_url or None
         self.is_local: bool = profile_cfg.is_local
 
-        # Profile tự trả lời "dùng được chưa" — xem
-        # LLMProfileConfig.resolve_api_key(). Thiếu khóa mà profile đang active
-        # thì đã nổ từ lúc nạp config.yaml, không tới được đây.
+        # Thiếu khóa mà profile đang active thì đã nổ từ lúc nạp config.yaml.
         api_key: str = profile_cfg.resolve_api_key()
 
-        # Timeout PHẢI đặt tay: mặc định của SDK là connect 5s + read 600s, nhân thêm
-        # max_retries → đợi rất lâu mới biết endpoint chưa bật.
+        # Timeout phải đặt tay: mặc định của SDK là connect 5s + read 600s.
         self.client: OpenAI = OpenAI(
             api_key=api_key,
             base_url=self.base_url,
@@ -56,8 +47,7 @@ class LLMGenerator:
             max_retries=profile_cfg.max_retries,
         )
 
-        # Bật khi đã biết server local không chạy → lần gọi sau lỗi ngay, không chờ
-        # timeout lại từng hop (một câu hỏi tốn (max_hop-1) × beam_size lần gọi).
+        # Bật khi đã biết server local không chạy → lần gọi sau lỗi ngay.
         self._offline: bool = False
         if self.is_local:
             self._check_local_server()

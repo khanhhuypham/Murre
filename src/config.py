@@ -16,16 +16,11 @@ MỖI DATASET KHAI ENCODER RIÊNG (`datasets.<ds>.encoder` → một khoá trong
 `encoders`), nên đổi dataset là encoder tự đi theo — không cần file config thứ
 hai, không cần biến môi trường.
 
-Chỉ BÍ MẬT mới đi qua .env, vì config.yaml nằm trong git:
-    khóa API   mỗi profile LLM đọc biến MÔI TRƯỜNG CỦA RIÊNG NÓ, khai ở
-               `api_key_env` (mặc định OPENAI_API_KEY). Đọc lúc cần, trong
-               LLMProfileConfig.resolve_api_key(), nên profile KHÔNG active cũng
-               lấy được khóa, và khóa không bị chép vào object rồi lộ ra /config.
-    OPENAI_BASE_URL   ghi đè base_url, CHỈ cho profile đang active.
+Bí mật đi qua .env:
+    khóa API          mỗi profile đọc biến riêng, khai ở `api_key_env`
+    OPENAI_BASE_URL   ghi đè base_url, chỉ cho profile đang active
 
-Profile active phải dùng được ngay lúc nạp file này: thiếu khóa mà không phải
-endpoint local thì nổ tại đây, chứ không đợi tới lúc dựng LLMGenerator — xem
-_check_active_llm_profile().
+Profile active phải dùng được ngay lúc nạp config (_check_active_llm_profile).
 
 Trỏ sang file config khác: `--config <đường dẫn>` hoặc env MURRE_CONFIG_PATH —
 dùng khi mỗi môi trường triển khai có một file riêng.
@@ -122,21 +117,13 @@ class EncoderProfileConfig(BaseModel):
 
 
 class LLMProfileConfig(BaseModel):
-    """Một model/endpoint LLM (OpenAI, Groq, Ollama...) khai trong llm.profiles.
-
-    Profile tự trả lời được câu "dùng được chưa" (resolve_api_key) và "có phải
-    endpoint local không" (is_local). Trước đây hai câu đó nằm trong
-    core/llm.py, nên mỗi chỗ gọi lại phải tự suy ra một lần.
-    """
+    """Một model/endpoint LLM (OpenAI, Groq, Ollama...) khai trong llm.profiles."""
 
     model_config = ConfigDict(protected_namespaces=())
 
     model_name: str
     api_key: str = ""  # trống → lấy từ biến môi trường `api_key_env`
-    # Tên biến môi trường chứa khóa của RIÊNG profile này. Mỗi profile khai một
-    # tên khác nhau được (GROQ_API_KEY, TOGETHER_API_KEY...) — trước đây chỉ có
-    # đúng một biến OPENAI_API_KEY và nó chỉ áp cho profile đang active, nên
-    # `--llm-profile <tên khác>` báo thiếu khóa dù .env đã có.
+    # Biến môi trường chứa khóa của RIÊNG profile này (GROQ_API_KEY, ...).
     api_key_env: str = "OPENAI_API_KEY"
     base_url: str = ""  # trống → endpoint OpenAI mặc định
     temperature: float = 0.0
@@ -145,8 +132,7 @@ class LLMProfileConfig(BaseModel):
     timeout: float = 120.0
     max_retries: int = 1  # 0 = không thử lại; lỗi kết nối thử lại cũng vô ích
 
-    # Điền bởi LLMConfig._name_profiles. Profile nằm trong Dict nên tự nó không
-    # biết mình tên gì, mà mọi thông báo lỗi đều phải nói rõ đang nói profile nào.
+    # Điền bởi LLMConfig._name_profiles — dùng cho thông báo lỗi.
     _name: str = PrivateAttr(default="")
 
     @property
@@ -155,24 +141,16 @@ class LLMProfileConfig(BaseModel):
 
     @property
     def is_local(self) -> bool:
-        """Endpoint chạy ngay trên máy này (Ollama, llama.cpp, ...).
-
-        Suy từ base_url chứ không khai riêng: một cờ khai tay sẽ lệch với
-        base_url mà không ai phát hiện.
-        """
+        """Endpoint chạy ngay trên máy này (Ollama, llama.cpp, ...)."""
         return bool(self.base_url) and (
             "localhost" in self.base_url or "127.0.0.1" in self.base_url
         )
 
     def resolve_api_key(self) -> str:
-        """Khóa để đưa cho SDK — CHỖ DUY NHẤT trả lời "profile này dùng được chưa".
+        """Khóa để đưa cho SDK.
 
         Thứ tự: biến môi trường `api_key_env` → `api_key` trong config.yaml →
-        giá trị giả cho endpoint local. Biến môi trường đứng trước vì config.yaml
-        nằm trong git: khóa thật phải ở .env, giá trị trong file chỉ là chỗ giữ.
-
-        Endpoint local không kiểm khóa, nhưng SDK OpenAI đòi chuỗi non-empty nên
-        vẫn phải đưa cho nó một giá trị.
+        giá trị giả cho endpoint local (SDK đòi chuỗi non-empty).
         """
         from_env: str = os.getenv(self.api_key_env, "")
         if from_env:
@@ -474,11 +452,7 @@ class Settings(BaseModel):
 def _profile_or_raise(
     profiles: Dict[str, LLMProfileConfig], name: str, source: str,
 ) -> LLMProfileConfig:
-    """Profile mang tên `name`, không có thì nổ — MỘT thông báo cho mọi chỗ tra.
-
-    `source` cho biết cái tên sai đến từ đâu (llm.active_profile trong
-    config.yaml, hay --llm-profile trên dòng lệnh) vì cách sửa khác nhau.
-    """
+    """Profile mang tên `name`, không có thì nổ. `source` = tên sai đến từ đâu."""
     if name not in profiles:
         raise ValueError(
             f"LLM profile '{name}' ({source}) không tồn tại trong config.yaml "
@@ -489,12 +463,9 @@ def _profile_or_raise(
 
 
 def _apply_env_overrides(settings: Settings) -> None:
-    """Cho .env ghi đè base_url của profile ĐANG ACTIVE — profile khác giữ nguyên.
+    """Cho .env ghi đè base_url của profile ĐANG ACTIVE.
 
-    api_key KHÔNG còn ghi đè ở đây: LLMProfileConfig.resolve_api_key() tự đọc
-    biến môi trường của riêng profile lúc cần. Nhờ vậy profile không-active cũng
-    lấy được khóa từ .env, và khóa thật không bị chép vào object rồi lộ ra
-    /config.
+    api_key không ghi đè ở đây — resolve_api_key() tự đọc biến môi trường.
     """
     active: LLMProfileConfig = _profile_or_raise(
         profiles=settings.llm.profiles,
@@ -512,15 +483,9 @@ def _apply_env_overrides(settings: Settings) -> None:
 
 
 def _check_active_llm_profile(settings: Settings) -> None:
-    """Profile active phải DÙNG ĐƯỢC, kiểm ngay lúc nạp config.
+    """Profile active phải dùng được — kiểm ngay lúc nạp config.
 
-    Cùng lý do với việc kiểm `type` của encoder ở EncoderProfileConfig: thiếu
-    khóa mà để tới lúc dựng LLMGenerator mới biết thì API đã nạp xong encoder
-    (~1.1GB) và mã hóa cả corpus rồi mới đổ — mất vài phút cho một lỗi cấu hình
-    đọc được trong tích tắc.
-
-    CHỈ kiểm profile active: config.yaml khai sẵn một profile Groq chưa dùng tới
-    thì không có lý do gì chặn cả file.
+    Chỉ kiểm profile active; profile khai sẵn mà chưa dùng thì bỏ qua.
     """
     settings.llm.profiles[settings.llm.active_profile].resolve_api_key()
 

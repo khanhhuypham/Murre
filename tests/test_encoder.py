@@ -13,11 +13,7 @@ import torch
 
 import core.encoder as encoder_module
 from config import cfg
-from core.encoder import (
-    SentenceEncoder,
-    _encode_batched,
-    plan_batches,
-)
+from core.encoder import SentenceEncoder
 
 
 @pytest.fixture(autouse=True)
@@ -55,13 +51,13 @@ class _StubLoad:
 
 def test_get_returns_the_sentence_encoder(monkeypatch) -> None:
     """Việc kiểm `type` nằm ở tầng config (xem test_config.py), không phải ở đây."""
-    monkeypatch.setattr(encoder_module, "_load", _StubLoad())
+    monkeypatch.setattr(SentenceEncoder, "_load", _StubLoad())
     assert isinstance(SentenceEncoder.get(), SentenceEncoder)
 
 
 def test_model_name_comes_from_the_dataset_profile(encoder_cfg, monkeypatch) -> None:
     stub = _StubLoad()
-    monkeypatch.setattr(encoder_module, "_load", stub)
+    monkeypatch.setattr(SentenceEncoder, "_load", stub)
     encoder_cfg.model_name = "intfloat/multilingual-e5-base"
 
     SentenceEncoder.get(dataset="spider")
@@ -75,7 +71,7 @@ def test_every_dataset_builds_an_encoder(monkeypatch) -> None:
     xong dữ liệu — bắt ở đây rẻ hơn nhiều.
     """
     stub = _StubLoad()
-    monkeypatch.setattr(encoder_module, "_load", stub)
+    monkeypatch.setattr(SentenceEncoder, "_load", stub)
 
     for ds in ("spider", "bird", "vitext2sql"):
         assert isinstance(SentenceEncoder.get(dataset=ds), SentenceEncoder)
@@ -89,7 +85,7 @@ def test_datasets_sharing_a_profile_share_the_encoder(monkeypatch) -> None:
     nào nổ ra, chỉ thấy RAM cao và khởi động lâu — nên phải chốt bằng test.
     """
     stub = _StubLoad()
-    monkeypatch.setattr(encoder_module, "_load", stub)
+    monkeypatch.setattr(SentenceEncoder, "_load", stub)
 
     encoders = [SentenceEncoder.get(dataset=ds) for ds in ("spider", "bird", "vitext2sql")]
 
@@ -163,20 +159,20 @@ def test_empty_prefix_leaves_the_text_alone() -> None:
 # --- chia batch theo ngân sách token ---------------------------------------
 def test_every_index_lands_in_exactly_one_batch() -> None:
     lengths = [5, 100, 7, 300, 2, 50]
-    batches = plan_batches(lengths=lengths, max_items=4, max_tokens=1000)
+    batches = SentenceEncoder.plan_batches(lengths=lengths, max_items=4, max_tokens=1000)
     flat = [i for b in batches for i in b]
     assert sorted(flat) == list(range(len(lengths)))
 
 
 def test_batches_respect_the_item_cap() -> None:
-    batches = plan_batches(lengths=[1] * 10, max_items=3, max_tokens=10**9)
+    batches = SentenceEncoder.plan_batches(lengths=[1] * 10, max_items=3, max_tokens=10**9)
     assert [len(b) for b in batches] == [3, 3, 3, 1]
 
 
 def test_a_long_text_gets_a_small_batch() -> None:
     """Chính là ca làm sập tiến trình: 1 schema 598 token không được kéo theo 255 câu."""
     lengths = [20] * 500 + [598]
-    batches = plan_batches(lengths=lengths, max_items=256, max_tokens=16384)
+    batches = SentenceEncoder.plan_batches(lengths=lengths, max_items=256, max_tokens=16384)
 
     longest_batch = next(b for b in batches if 500 in b)
     assert len(longest_batch) * 598 <= 16384
@@ -184,7 +180,7 @@ def test_a_long_text_gets_a_small_batch() -> None:
 
 def test_peak_batch_cost_is_bounded_by_the_budget() -> None:
     lengths = [20] * 590 + [598, 500, 400, 300, 250, 200, 150]
-    batches = plan_batches(lengths=lengths, max_items=256, max_tokens=16384)
+    batches = SentenceEncoder.plan_batches(lengths=lengths, max_items=256, max_tokens=16384)
 
     peak = max(len(b) * max(lengths[i] for i in b) for b in batches)
     assert peak <= 16384
@@ -194,12 +190,28 @@ def test_peak_batch_cost_is_bounded_by_the_budget() -> None:
 
 def test_an_oversized_single_text_still_gets_its_own_batch() -> None:
     """Một câu vượt trần thì vẫn phải chạy — bỏ nó đi là mất schema khỏi corpus."""
-    batches = plan_batches(lengths=[50_000], max_items=256, max_tokens=16384)
+    batches = SentenceEncoder.plan_batches(lengths=[50_000], max_items=256, max_tokens=16384)
     assert batches == [[0]]
 
 
 def test_empty_input_plans_nothing() -> None:
-    assert plan_batches(lengths=[], max_items=8, max_tokens=100) == []
+    assert SentenceEncoder.plan_batches(lengths=[], max_items=8, max_tokens=100) == []
+
+
+class _FixedLengthEncoder(SentenceEncoder):
+    """Encoder giả: độ dài token do test chỉ định, forward trả về chính giá trị
+    số của văn bản để đối chiếu được thứ tự. Không cần tokenizer/model thật."""
+
+    def __init__(self, lengths: List[int], batch_size: int, max_batch_tokens: int) -> None:
+        self._lengths = list(lengths)
+        self.batch_size = batch_size
+        self.max_batch_tokens = max_batch_tokens
+
+    def _token_lengths(self, texts: List[str]) -> List[int]:
+        return self._lengths[: len(texts)]
+
+    def _embed_batch(self, batch: List[str]) -> torch.Tensor:
+        return torch.tensor([[float(t)] for t in batch])
 
 
 def test_results_come_back_in_the_original_order() -> None:
@@ -208,22 +220,18 @@ def test_results_come_back_in_the_original_order() -> None:
     Không có lỗi nào nổ ra, chỉ là mọi điểm số gán nhầm bảng — nên test bám đúng
     vào đây. Model giả trả về chính giá trị số của văn bản để đối chiếu được.
     """
-    texts = [str(i) for i in range(20)]
     # Độ dài so le → plan_batches chắc chắn phải xáo thứ tự.
-    lengths = [(i * 7) % 20 + 1 for i in range(20)]
-
-    def forward(batch):
-        return torch.tensor([[float(t)] for t in batch])
-
-    out = _encode_batched(
-        texts=texts, lengths=lengths, max_items=3, max_tokens=12, forward=forward,
+    enc = _FixedLengthEncoder(
+        lengths=[(i * 7) % 20 + 1 for i in range(20)],
+        batch_size=3,
+        max_batch_tokens=12,
     )
+
+    out = enc._encode_batched(texts=[str(i) for i in range(20)])
     assert out.flatten().tolist() == [float(i) for i in range(20)]
 
 
 def test_encode_batched_of_nothing_is_empty() -> None:
-    out = _encode_batched(
-        texts=[], lengths=[], max_items=4, max_tokens=100,
-        forward=lambda b: torch.empty(0, 2),
-    )
+    enc = _FixedLengthEncoder(lengths=[], batch_size=4, max_batch_tokens=100)
+    out = enc._encode_batched(texts=[])
     assert out.numel() == 0

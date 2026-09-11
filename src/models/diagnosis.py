@@ -6,22 +6,12 @@ nào import ở đây. Bảng luật cho LLM từng viết thử ở core/llm_er
 bỏ, nên phần "phần RIÊNG" dưới đây hiện chưa có bản thật nào — ví dụ trong
 docstring này là mã minh hoạ, không phải mã đang chạy.
 
-Ý TƯỞNG
--------
-Ở đâu cũng lặp lại một hình dạng: bắt exception của thư viện bên dưới → đoán xem
-nó nghĩa là gì → ráp một thông báo kèm gợi ý → ném lại. Viết tay ở từng chỗ thì
-mỗi chỗ một kiểu, và thông tin quan trọng nhất (CÓ ĐÁNG THỬ LẠI KHÔNG) bị mất
-ngay lúc ném lại.
+Tách làm hai phần:
 
-Ở đây tách làm hai phần:
+    phần CHUNG (file này)   — cơ chế: khớp luật, dựng thông báo, mang phân loại
+    phần RIÊNG (từng miền)  — dữ liệu: một enum loại lỗi + một bảng luật
 
-    phần CHUNG (file này)   — cơ chế: khớp luật, dựng thông báo, mang theo phân
-                              loại. Không biết gì về LLM, dataset hay encoder.
-    phần RIÊNG (từng miền)  — chỉ là DỮ LIỆU: một enum loại lỗi + một bảng luật.
-                              Xem ví dụ ngay bên dưới.
-
-Thêm một miền mới (nạp dataset, tải encoder từ HuggingFace, chạy SQL...) = thêm
-một enum và một bảng, KHÔNG thêm cơ chế.
+Thêm một miền mới = thêm một enum và một bảng, KHÔNG thêm cơ chế.
 
     class DatasetErrorKind(str, Enum):
         MISSING_FILE = "missing_file"
@@ -38,16 +28,12 @@ một enum và một bảng, KHÔNG thêm cơ chế.
     except Exception as e:
         raise DATASET_ERRORS.explain(exc=e, context={...}) from e
 
-BA THỨ CƠ CHẾ NÀY LO
---------------------
-1. KHỚP LUẬT THEO THỨ TỰ, và TỰ KIỂM thứ tự đó lúc dựng bảng. Exception của thư
-   viện hay kế thừa lồng nhau (APITimeoutError < APIConnectionError), đặt lớp cha
-   lên trước là lớp con không bao giờ khớp — sai âm thầm, không có lỗi nào nổ.
-   RuleTable.__init__ phát hiện và nổ NGAY lúc import, nên không cần một dòng
-   chú thích "ĐỪNG SẮP LẠI" mà vẫn an toàn.
-2. MANG THEO `retryable`. Chỗ gọi hỏi thẳng thay vì suy từ tên class exception.
-3. DỊCH SANG HTTP một lần (`status` + to_app_error), để tầng API không phải tự
-   đoán lỗi lõi tương ứng status nào.
+Cơ chế lo ba việc:
+
+1. Khớp luật theo THỨ TỰ, và tự kiểm thứ tự đó lúc dựng bảng — exception của thư
+   viện hay kế thừa lồng nhau, đặt lớp cha trước là lớp con không bao giờ khớp.
+2. Mang theo `retryable` để chỗ gọi hỏi thẳng.
+3. Dịch sang HTTP một lần (`status` + to_app_error).
 """
 from __future__ import annotations
 
@@ -80,15 +66,12 @@ DEFAULT_VARIANT = ""
 
 
 class Diagnosis(RuntimeError, Generic[K]):
-    """Lỗi đã được chẩn đoán: có thông báo cho người, và phân loại cho máy.
+    """Lỗi đã chẩn đoán: thông báo cho người + phân loại cho máy.
 
-    Vẫn là RuntimeError để chỗ nào đang `except RuntimeError` không hỏng khi nối
-    vào. Phần thêm:
-
-        kind      : loại lỗi theo enum CỦA MIỀN đó
-        retryable : thử lại có ích không — chỗ gọi hỏi cái này, không đoán
+        kind      : loại lỗi theo enum của miền đó
+        retryable : thử lại có ích không
         status    : HTTP tương ứng, dùng khi dịch sang AppError
-        context   : dữ liệu đã dùng để dựng thông báo, giữ lại để ghi log
+        context   : dữ liệu đã dùng để dựng thông báo
     """
 
     def __init__(
@@ -112,10 +95,8 @@ class Diagnosis(RuntimeError, Generic[K]):
     def to_app_error(self, message: Optional[str] = None) -> AppError:
         """Sang AppError để tầng API trả đúng HTTP status.
 
-        MẶC ĐỊNH ĐƯA NGUYÊN `message` ra client, vì message ở đây là hướng dẫn
-        sửa cấu hình cho chính người vận hành service này. Nếu service mở ra
-        ngoài, truyền `message` ngắn gọn vào đây — phần chi tiết vẫn còn trong
-        log qua `cause`.
+        Mặc định đưa nguyên `message` ra client; service mở ra ngoài thì truyền
+        `message` ngắn gọn vào đây.
         """
         return AppError(message or self.message, self.status, self.cause)
 
@@ -130,17 +111,10 @@ class Rule(Generic[K]):
     exc       : một class exception, hoặc tuple nhiều class cùng nghĩa
     kind      : loại lỗi (enum của miền)
     retryable : thử lại có ích không
-    status    : HTTP tương ứng, chỉ dùng khi lỗi đi ra tới tầng API
+    status    : HTTP tương ứng, chỉ dùng khi lỗi ra tới tầng API
     headline  : câu đầu tiên; chuỗi format, điền bằng `context`
-    hints     : biến thể gợi ý → chuỗi format. Miền không chia biến thể thì khai
-                đúng một khóa DEFAULT_VARIANT. Thiếu khóa đang cần thì rơi về
-                DEFAULT_VARIANT, thiếu nữa thì để trống — gợi ý là phần thêm,
-                không được phép làm hỏng việc báo lỗi.
-
-    Để dạng DỮ LIỆU (chuỗi format) chứ không phải hàm, để cả bảng đọc được trong
-    một màn hình. Phần gợi ý phải đi hỏi mới biết (liệt kê model đang có, lệnh
-    pull đúng...) thì truyền qua tham số `extra` của explain(), không nhét vào
-    bảng — nhờ vậy bảng không bao giờ tự gọi mạng.
+    hints     : biến thể gợi ý → chuỗi format; thiếu khóa thì rơi về
+                DEFAULT_VARIANT, thiếu nữa thì để trống
     """
 
     exc: ExcTypes
@@ -162,13 +136,10 @@ class UnreachableRule(ValueError):
 class RuleTable(Generic[K]):
     """Bảng luật của MỘT miền. Dựng ở mức module, dùng lại mãi.
 
-    name     : tên miền, chỉ để thông báo lỗi nói rõ bảng nào sai
+    name     : tên miền, để thông báo lỗi nói rõ bảng nào sai
     rules    : theo THỨ TỰ ƯU TIÊN — khớp đầu tiên thắng
-    fallback : luật cuối, dùng khi không khớp gì. BẮT BUỘC: không có nó thì chỗ
-               gọi nhận lại exception chưa phân loại và không có `retryable` để
-               hỏi — đúng cái vấn đề bảng này sinh ra để giải.
-    variant  : context → khóa biến thể gợi ý (ví dụ "local" / "remote"). Bỏ
-               trống thì mọi lỗi dùng DEFAULT_VARIANT.
+    fallback : luật cuối, dùng khi không khớp gì (bắt buộc)
+    variant  : context → khóa biến thể gợi ý; bỏ trống thì dùng DEFAULT_VARIANT
     """
 
     def __init__(
@@ -188,9 +159,8 @@ class RuleTable(Generic[K]):
     def _check_order(self) -> None:
         """Nổ nếu có luật đứng sau bị luật đứng trước che hoàn toàn.
 
-        isinstance khớp cả lớp cha, nên đặt lớp cha trước lớp con là lớp con
-        thành code chết. Bắt ở đây, lúc import, thay vì để nó lặng lẽ chẩn đoán
-        sai suốt đời chương trình.
+        isinstance khớp cả lớp cha, nên lớp cha đặt trước là lớp con thành code
+        chết. Bắt lúc import thay vì để chẩn đoán sai lúc chạy.
         """
         for i, earlier in enumerate(self.rules):
             for later in self.rules[i + 1:]:
@@ -223,9 +193,8 @@ class RuleTable(Generic[K]):
     ) -> Diagnosis[K]:
         """exception thô → Diagnosis đã phân loại, kèm gợi ý đúng biến thể.
 
-        `extra` là phần gợi ý phải đi HỎI mới biết (liệt kê model đang có, lệnh
-        pull đúng với Docker hay không...). Truyền từ ngoài vào để hàm này không
-        tự gọi mạng — test gọi được mà không cần server nào.
+        `extra` là gợi ý phải đi hỏi mới biết, truyền từ ngoài vào để hàm này
+        không tự gọi mạng.
         """
         rule: Rule[K] = self.match(exc=exc)
         key: str = self._variant(context) if self._variant else DEFAULT_VARIANT
@@ -249,11 +218,9 @@ class RuleTable(Generic[K]):
 
 
 def is_retryable(exc: BaseException, default: bool = False) -> bool:
-    """Có nên thử lại `exc` không — MỘT chỗ quyết định cho mọi vòng lặp retry.
+    """Có nên thử lại `exc` không — một chỗ quyết định cho mọi vòng lặp retry.
 
-    `default` là câu trả lời cho exception CHƯA qua bảng nào (lỗi lạ từ thư viện
-    khác, bug trong code ta). Vòng lặp nào đang `except Exception` rộng thì để
-    default=True cho giống hành vi cũ, rồi siết dần.
+    `default` dùng cho exception chưa qua bảng nào.
     """
     if isinstance(exc, Diagnosis):
         return exc.retryable

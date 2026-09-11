@@ -1,8 +1,7 @@
 """MURRE: retrieve bảng đa hop bằng beam search rồi xếp hạng bảng.
 
-Bản cài đặt này BÁM THEO PAPER (COLING 2025, §3.2–3.5 + Appendix C/D/E), không
-bám theo code phát hành ở github.com/zhxlia/Murre. Xem mục cuối docstring để biết
-5 chỗ hai bản khác nhau.
+Bám theo PAPER (COLING 2025, §3.2–3.5 + Appendix C/D/E), không theo code phát
+hành của tác giả.
 
 VÒNG ĐỜI MỘT CÂU HỎI (§3.2 — Figure 2)
 --------------------------------------
@@ -31,22 +30,8 @@ TỪ VỰNG
     all_paths     all_paths của Algorithm 1 — MỌI đường đi từng sinh ra, kể cả
                   đường bị tỉa và đường dừng sớm. Đây là đầu vào duy nhất của Score.
 
-KHÁC GÌ SO VỚI CODE PHÁT HÀNH CỦA TÁC GIẢ
------------------------------------------
-Code của tác giả (retrieve/retrieve.py, rewrite/sample.py, rewrite/score.py,
-slurm/run.sh) lệch paper ở 5 chỗ. Bản này chọn PAPER ở cả 5:
-
-    | Chỗ             | Code tác giả                  | Ở đây — theo paper           |
-    |-----------------|-------------------------------|------------------------------|
-    | Chuẩn hoá       | pos(s) = (s+2)/2, rồi lấy log | Norm(s) = (s+1)/2 (Eq. C.1)  |
-    | Phạm vi hop ≥2  | khoá trong pool 100 của hop 1 | toàn corpus mỗi hop (§3.3)   |
-    | Nhánh mỗi beam  | 3B ứng viên rồi tỉa còn B     | đúng B → B×B rồi tỉa (§3.3)  |
-    | Câu cho Removal | câu viết lại của hop trước    | luôn CÂU HỎI GỐC q (§3.4)    |
-    | Chấm điểm bảng  | mọi ứng viên của turn cuối    | bảng trên đường đi (Alg. 1)  |
-
-Hệ quả cần biết: danh sách trả về chỉ gồm những bảng THỰC SỰ nằm trên một đường
-đi, tối đa B + (H-1)·B² bảng (B=5, H=3 → ≤55, thường ít hơn vì trùng lặp). Muốn
-đo r@K với K lớn thì phải tăng beam_size.
+Danh sách trả về chỉ gồm bảng nằm trên một đường đi, tối đa B + (H-1)·B² bảng
+(B=5, H=3 → ≤55). Muốn đo r@K với K lớn thì phải tăng beam_size.
 """
 from __future__ import annotations
 
@@ -100,31 +85,15 @@ class RetrievalPath:
 class MurreRetriever:
     """MURRE đầy đủ, chạy trong RAM, không đọc/ghi file trung gian.
 
-    Ráp từ config — đường dùng thật của cli.py và api/:
-
         retriever = MurreRetriever.for_dataset(dataset="vitext2sql")
         tables = retriever.run(question=question)
         sql = retriever.generate_sql(question=question, tables=tables)
 
-    Tự ráp tay — dùng khi test, hoặc khi cần corpus không đến từ config:
+    Retriever gắn với MỘT dataset: `corpus` + `embeddings` khai lúc dựng (không
+    phải tham số của run()), và rewriter nạp prompt riêng của dataset đó.
 
-        retriever = MurreRetriever(
-            encoder=encoder, rewriter=rewriter, llm=llm,
-            corpus=corpus, embeddings=embs,
-        )
-
-    Retriever SỞ HỮU corpus của nó: `corpus` + `embeddings` khai lúc dựng, không
-    phải tham số của run(). Retriever vốn đã gắn với MỘT dataset (rewriter nạp
-    prompt riêng của dataset đó lúc dựng), nên corpus nằm cùng chỗ là đúng nhà —
-    và ghép nhầm corpus dataset này với embeddings dataset kia không viết ra
-    được. __init__ còn kiểm hai thứ đó đi cùng nhau và khớp số dòng.
-
-    Embeddings được chuẩn hoá L2 MỘT LẦN lúc dựng (self.doc_embeddings), không
-    phải mỗi lần run().
-
-    rewriter / llm : phải có ít nhất một. Thiếu rewriter thì dựng tạm một cái từ
-                     `llm` với prompt của general.dataset — chỉ hợp khi chạy đúng
-                     dataset mặc định. generate_sql() thì bắt buộc có `llm`.
+    rewriter / llm : phải có ít nhất một. Thiếu rewriter thì dựng tạm từ `llm`
+                     với prompt của general.dataset. generate_sql() cần `llm`.
     beam_size / max_hop : để None thì lấy từ cfg.pipeline.
     """
 
@@ -163,9 +132,7 @@ class MurreRetriever:
         )
 
         self.corpus: List[str] = list(corpus) if corpus is not None else []
-        # Chuẩn hoá MỘT LẦN ở đây, không phải mỗi lần run(). Trước đây mỗi câu hỏi
-        # chuẩn hoá lại cả ma trận corpus — một lượt dev.json là hàng nghìn lần
-        # làm lại đúng một phép tính trên ma trận không hề đổi.
+        # Chuẩn hoá L2 một lần ở đây, không phải mỗi lần run().
         self.doc_embeddings: torch.Tensor = (
             F.normalize(input=embeddings, p=2, dim=1)
             if embeddings is not None
@@ -183,29 +150,15 @@ class MurreRetriever:
         encoder: Optional[SentenceEncoder] = None,
         llm: Optional[LLMGenerator] = None,
     ) -> MurreRetriever:
-        """Retriever CỦA `dataset`, ráp sẵn từ config — LỐI VÀO của cli.py và api/.
+        """Retriever của `dataset`, ráp sẵn từ config — lối vào của cli.py và api/.
 
             dataset : None → dataset đang chọn (general.dataset).
-            encoder : None → SentenceEncoder.get(dataset). Instance đó đã dùng lại
-                      theo tên profile, nên spider và bird (cùng profile) chỉ nạp
-                      model một lần. Chỉ TRUYỀN VÀO khi cần encoder khác hẳn.
+            encoder : None → SentenceEncoder.get(dataset).
             llm     : None → LLMGenerator() với profile đang active. Truyền vào
-                      để dùng lại (API giữ một LLM trong app.state cho mọi
-                      dataset) hoặc để chọn profile khác:
-                      `llm=LLMGenerator(profile="qwen2.5-14b")`.
-
-        KHÔNG có tham số `llm_profile` ở đây. Có cả `llm` lẫn `llm_profile` là hai
-        cách nói cùng một chuyện, mà truyền cả hai thì `llm_profile` bị bỏ qua
-        lặng lẽ. Chỗ gọi tự dựng LLMGenerator là hết đường hiểu nhầm.
-
-        LLM nên dựng TRƯỚC corpus: endpoint chưa bật thì hỏng ngay, không mất công
-        encode cả corpus rồi mới báo lỗi. Truyền `llm` vào thì chỗ gọi đã dựng nó
-        xong từ trước rồi, nên thứ tự đó vẫn giữ nguyên.
+                      để dùng lại, hoặc để chọn profile khác.
         """
-        # Import trong thân hàm, CÙNG LÝ DO với pipeline.sql ở generate_sql():
-        # core.corpus kéo theo dataset/loader, mà nó chỉ cần cho việc RÁP, không
-        # cần cho thuật toán retrieval. Để ở đầu file là ai import retriever cũng
-        # phải nạp cả tầng đọc dataset.
+        # Import trong thân hàm: core.corpus kéo theo dataset/loader, chỉ cần
+        # cho việc ráp chứ không cho thuật toán retrieval.
         from core.corpus import build_corpus, load_embeddings
 
         if llm is None:
