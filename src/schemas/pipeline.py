@@ -35,6 +35,13 @@ class PipelineRunRequest(BaseModel):
                     "MURRE gọi LLM mỗi hop mỗi beam nên chạy đủ dev.json rất lâu — "
                     "để thử nhanh hãy đặt limit=20.",
     )
+    verbose: bool = Field(
+        default=False,
+        description="Ghi log chi tiết từng hop của mọi câu (beam giữ lại, nhánh "
+                    "early stop, bảng đã xếp hạng). Log nằm ở outputs/logs/murre.log chứ "
+                    "không có trong response — bật khi cần soi, vì lượt chạy dài "
+                    "sinh ra log rất lớn.",
+    )
 
 
 class PipelineJob(BaseModel):

@@ -11,6 +11,7 @@ from models.errors import AppError
 from models.retrieval import RetrievedTable
 from pipeline.retriever import MurreRetriever
 from schemas.retrieve import RetrieveRequest, TableResult
+from utils import logger
 
 router = APIRouter(tags=["retrieve"])
 
@@ -26,11 +27,18 @@ async def retrieve_tables(payload: RetrieveRequest, request: Request) -> List[Ta
         ds_name=payload.dataset,
     )
 
+    # Tiêu đề in TRƯỚC: mấy chục dòng [MURRE] ngay bên dưới là của request này.
+    logger.info(f"[API] /retrieve {payload.dataset}: {payload.question}")
+
     # MURRE gọi LLM ở mỗi hop → blocking. Đẩy sang thread để không chẹn event loop.
     # to_thread() chuyển tiếp nguyên keyword argument xuống hàm được gọi.
+    #
+    # verbose=True vì lẽ như ở /sql: một câu mỗi request, log từng hop là đường duy
+    # nhất soi được beam và nhánh early stop đứng sau thứ hạng trả về.
     results: List[RetrievedTable] = await asyncio.to_thread(
         retriever.run,
         question=payload.question,
+        verbose=True,
     )
     return [
         TableResult(rank=i + 1, table_schema=r.schema, score=r.score)

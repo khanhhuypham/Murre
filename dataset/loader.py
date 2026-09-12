@@ -65,7 +65,7 @@ def _dev_cached() -> List[Dict[str, Any]]:
 
     Cache theo đường dẫn nên đổi general.dataset giữa chừng vẫn ra dữ liệu đúng.
     """
-    path: str = cfg.dataset_paths.dev
+    path: str = cfg.dataset_config().dev
     if path not in _DEV_CACHE:
         _DEV_CACHE[path] = load_dev()
     return _DEV_CACHE[path]

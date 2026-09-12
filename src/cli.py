@@ -3,6 +3,7 @@
     python -m cli ask                       một câu hỏi (câu đầu dev.json), in ra terminal
     python -m cli ask -q "..." -v           câu tự viết, in chi tiết từng hop
     python -m cli run --limit 20            chạy 20 câu đầu dev.json, ghi outputs/
+    python -m cli run --limit 20 -v         như trên, in chi tiết từng hop mỗi câu
     python -m cli run --dataset bird        chạy cả dev.json của BIRD
     python -m cli run --sql                 chạy xong thì sinh luôn SQL từ top-K bảng
     python -m cli embed                     chỉ encode corpus rồi lưu cache .pt
@@ -51,7 +52,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                 os.remove(cache_file)
                 logger.info(f"[CLI] --force-embed → đã xoá {cache_file}, sẽ encode lại.")
 
-        result: Dict[str, Any] = run_pipeline(limit=args.limit)
+        result: Dict[str, Any] = run_pipeline(limit=args.limit, verbose=args.verbose)
         _print_scores(metrics=result["metrics"], num_questions=result["num_questions"])
         print(f"  result → {result['result_file']}")
         print(f"  score  → {result['score_file']}")
@@ -132,6 +133,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--force-embed", action="store_true", help="xoá cache .pt để encode lại corpus",
+    )
+    run.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="log chi tiết từng hop của mọi câu (log rất dài với dev.json đầy đủ)",
     )
     run.set_defaults(func=cmd_run)
 

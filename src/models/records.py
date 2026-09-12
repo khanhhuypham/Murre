@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 from models.retrieval import RetrievedRow
 
@@ -29,12 +29,24 @@ class ResultRecord:
     gold: List[str]
     retrieved: List[RetrievedRow]
 
+    # SQL — thêm ở CUỐI theo quy tắc đầu file, và có mặc định nên record cũ
+    # (checkpoint của lượt chạy trước) vẫn đọc được.
+    #   gold_sql   câu SQL đúng, chép từ `query` của dev.json
+    #   sql        câu SQL do LLM sinh — rỗng cho tới khi chạy pipeline/sql.py
+    #   sql_top_k  sinh từ top mấy bảng; None = chưa sinh
+    gold_sql: str = ""
+    sql: str = ""
+    sql_top_k: Optional[int] = None
+
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "ResultRecord":
         return cls(
             utterance=d.get("utterance", ""),
             gold=list(d.get("gold", [])),
             retrieved=RetrievedRow.from_list(items=d.get("retrieved", [])),
+            gold_sql=d.get("gold_sql", ""),
+            sql=d.get("sql", ""),
+            sql_top_k=d.get("sql_top_k"),
         )
 
     @classmethod
@@ -46,6 +58,9 @@ class ResultRecord:
             "utterance": self.utterance,
             "gold": self.gold,
             "retrieved": [r.to_dict() for r in self.retrieved],
+            "gold_sql": self.gold_sql,
+            "sql": self.sql,
+            "sql_top_k": self.sql_top_k,
         }
 
     @property

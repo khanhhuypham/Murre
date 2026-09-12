@@ -342,14 +342,14 @@ class MurreRetriever:
     ) -> None:
         origin: str = f"{grown} ứng viên → " if grown is not None else ""
         logger.info(f"[MURRE] Hop {hop}: {origin}giữ {len(paths)} nhánh")
-        for path in paths[:3]:
+        for path in paths:
             score: float = scoring.path_score(similarities=path.sims)
             logger.info(f"   {score:.4f}  {' -> '.join(path.schemas)}")
 
     @staticmethod
     def _log_results(results: Sequence[RetrievedTable], num_paths: int) -> None:
-        logger.info(f"[MURRE] Xong: {num_paths} đường đi → {len(results)} bảng | top-3:")
-        for table in results[:3]:
+        logger.info(f"[MURRE] Xong: {num_paths} đường đi → {len(results)} bảng | xếp hạng:")
+        for table in results:
             logger.info(f"   {table.score:.4f}  {table.schema}")
 
     # =========================================================================

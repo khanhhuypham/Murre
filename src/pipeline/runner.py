@@ -92,12 +92,16 @@ def run_pipeline(
     dataset: Optional[Dataset] = None,
     limit: Optional[int] = None,
     on_progress: Optional[ProgressFn] = None,
+    verbose: bool = False,
 ) -> Dict[str, Any]:
     """Chạy retrieval trên cả dev.json rồi ghi result + score ra đĩa.
 
         dataset     : None → giữ nguyên general.dataset đang có.
         limit       : chỉ chạy N câu đầu (None = cả dev.json).
         on_progress : callback(đã_xong, tổng).
+        verbose     : log chi tiết từng hop của MỌI câu, như `cli ask -v`. Mỗi câu
+                      in thêm một dòng tiêu đề để biết khối [MURRE] bên dưới thuộc
+                      câu nào. Lượt chạy dài thì log phình rất to — bật khi cần soi.
 
     Trả về {"result_file", "score_file", "num_questions", "retrieved_depth", "metrics"}.
     Ném AppError 409 nếu đang có lần chạy khác.
@@ -106,7 +110,7 @@ def run_pipeline(
         raise AppError.pipeline_busy()
     try:
         with override_dataset(dataset=dataset):
-            return _run_locked(limit=limit, on_progress=on_progress)
+            return _run_locked(limit=limit, on_progress=on_progress, verbose=verbose)
     finally:
         _RUN_LOCK.release()
 
@@ -166,6 +170,7 @@ def _load_checkpoint(path: str, fingerprint: Dict[str, Any]) -> Dict[int, Result
 def _run_locked(
     limit: Optional[int],
     on_progress: Optional[ProgressFn],
+    verbose: bool = False,
 ) -> Dict[str, Any]:
     """Thân của run_pipeline — đã giữ lock và đã ghi đè cfg."""
     dev: List[Dict[str, Any]] = load_dev()
@@ -204,11 +209,19 @@ def _run_locked(
         for n, idx in enumerate(todo, start=1):
             d: Dict[str, Any] = dev[idx]
 
+            # Tiêu đề phải in TRƯỚC khi chạy: mấy chục dòng [MURRE] ngay bên dưới
+            # là của câu này, không có dòng này thì log batch không quy về câu nào.
+            if verbose:
+                logger.info(
+                    f"[Runner] Câu {n}/{len(todo)} (#{idx}): {d['utterance']}"
+                )
+            started: float = time.perf_counter()
+
             # Thử lại từng câu thay vì để hỏng cả lượt chạy.
             hits: Optional[List[RetrievedTable]] = None
             for attempt in range(1, retries + 1):
                 try:
-                    hits = retriever.run(question=d["utterance"])
+                    hits = retriever.run(question=d["utterance"], verbose=verbose)
                     break
                 except Exception as exc:
                     if attempt == retries:
@@ -231,6 +244,8 @@ def _run_locked(
                 gold=d.get("rel_schema", []),
                 # to_rows(): đánh số rank + đổi khóa `score` → `similarity`.
                 retrieved=RetrievedTable.to_rows(tables=hits),
+                # SQL đúng, để đối chiếu với câu pipeline/sql.py sinh ra sau này.
+                gold_sql=d.get("query", ""),
             )
             done[idx] = record
             ckpt.write(json.dumps(
@@ -240,6 +255,17 @@ def _run_locked(
 
             if on_progress is not None:
                 on_progress(len(done), total)
+            if verbose:
+                gold: List[str] = list(d.get("rel_schema", []))
+                top: List[str] = [t.schema for t in hits[: max(len(gold), 1)]]
+                found: int = sum(1 for g in gold if g in top)
+                hit_note: str = (
+                    f" | gold {found}/{len(gold)} trong top-{len(top)}" if gold else ""
+                )
+                logger.info(
+                    f"[Runner] Câu #{idx} xong sau {time.perf_counter() - started:.1f}s"
+                    f" | {len(hits)} bảng{hit_note}"
+                )
             if n % 20 == 0 or n == len(todo):
                 logger.info(f"[Runner] {len(done)}/{total} câu xong.")
 

@@ -17,6 +17,7 @@ from models.retrieval import RetrievedTable
 from pipeline.retriever import MurreRetriever
 from pipeline.sql import build_sql
 from schemas.sql import SqlRequest, SqlResponse
+from utils import logger
 
 router = APIRouter(tags=["sql"])
 
@@ -33,11 +34,20 @@ async def generate_sql(payload: SqlRequest, request: Request) -> SqlResponse:
         ds_name=payload.dataset,
     )
 
+    # Tiêu đề in TRƯỚC: mấy chục dòng [MURRE] ngay bên dưới là của request này.
+    logger.info(f"[API] /sql {payload.dataset}: {payload.question}")
+
     # Cả retrieve lẫn gọi LLM đều blocking → đẩy sang thread để không chẹn event loop.
     # to_thread() chuyển tiếp nguyên keyword argument xuống hàm được gọi.
+    #
+    # verbose=True: một request chỉ có MỘT câu hỏi nên log từng hop chỉ thêm chục
+    # dòng, mà đó là thứ duy nhất cho biết vì sao SQL lại dùng mấy bảng đó —
+    # response chỉ có bảng cuối cùng, không có đường đi. Đường batch thì ngược lại,
+    # verbose do người gọi bật (run_pipeline).
     tables: List[RetrievedTable] = await asyncio.to_thread(
         retriever.run,
         question=payload.question,
+        verbose=True,
     )
     if not tables:
         raise AppError.conflict(message="Không tìm được bảng nào cho câu hỏi này.")
@@ -51,4 +61,5 @@ async def generate_sql(payload: SqlRequest, request: Request) -> SqlResponse:
         dataset=payload.dataset,
     )
 
+    logger.info(f"[API] /sql → {len(schemas)} bảng | SQL: {sql}")
     return SqlResponse(question=payload.question, sql=sql, tables=schemas)
