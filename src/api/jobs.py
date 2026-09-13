@@ -39,12 +39,15 @@ def run_job(state: State, job_id: str, req: PipelineRunRequest) -> None:
 
     try:
         # Không truyền model: encoder do server quyết định (xem PipelineRunRequest).
-        run_pipeline(
+        result = run_pipeline(
             dataset=req.dataset,
             limit=req.limit,
             on_progress=on_progress,
             verbose=req.verbose,
+            with_sql=req.sql,
+            sql_top_k=req.k,
         )
+        job.sql_file = result["sql_file"]
         # Đọc lại metric bằng đúng đường code của /evaluate.
         job.result = evaluate_run(
             dataset=req.dataset,

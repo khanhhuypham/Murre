@@ -35,6 +35,14 @@ class PipelineRunRequest(BaseModel):
                     "MURRE gọi LLM mỗi hop mỗi beam nên chạy đủ dev.json rất lâu — "
                     "để thử nhanh hãy đặt limit=20.",
     )
+    sql: bool = Field(
+        default=True,
+        description="Chạy xong retrieval thì sinh luôn SQL cho mọi câu bằng LLM, "
+                    "điền vào `sql` + `sql_top_k` của file result (cạnh `gold_sql`) "
+                    "và ghi thêm sql.{k}.txt. Dùng `k` làm số bảng đưa vào prompt. "
+                    "Tốn thêm MỘT lần gọi LLM mỗi câu — đặt false nếu chỉ cần đo "
+                    "recall.",
+    )
     verbose: bool = Field(
         default=False,
         description="Ghi log chi tiết từng hop của mọi câu (beam giữ lại, nhánh "
@@ -65,4 +73,8 @@ class PipelineJob(BaseModel):
     )
     error: Optional[str] = Field(
         default=None, description="Nguyên nhân lỗi — chỉ có khi status=failed"
+    )
+    sql_file: Optional[str] = Field(
+        default=None,
+        description="Đường dẫn sql.{k}.txt — chỉ có khi chạy với sql=true",
     )

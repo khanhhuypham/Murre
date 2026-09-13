@@ -93,6 +93,8 @@ def run_pipeline(
     limit: Optional[int] = None,
     on_progress: Optional[ProgressFn] = None,
     verbose: bool = False,
+    with_sql: bool = False,
+    sql_top_k: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Chạy retrieval trên cả dev.json rồi ghi result + score ra đĩa.
 
@@ -102,15 +104,33 @@ def run_pipeline(
         verbose     : log chi tiết từng hop của MỌI câu, như `cli ask -v`. Mỗi câu
                       in thêm một dòng tiêu đề để biết khối [MURRE] bên dưới thuộc
                       câu nào. Lượt chạy dài thì log phình rất to — bật khi cần soi.
+        with_sql    : chạy xong retrieval thì sinh luôn SQL cho mọi câu, điền vào
+                      `sql` + `sql_top_k` của chính file result và ghi thêm
+                      sql.{k}.txt. Mỗi câu tốn thêm MỘT lần gọi LLM.
+        sql_top_k   : số bảng đưa vào prompt sinh SQL. None → pipeline.top_k_output.
 
-    Trả về {"result_file", "score_file", "num_questions", "retrieved_depth", "metrics"}.
+    Trả về {"result_file", "score_file", "num_questions", "retrieved_depth",
+    "metrics", "sql_file"} — "sql_file" là None khi with_sql=False.
     Ném AppError 409 nếu đang có lần chạy khác.
     """
     if not _RUN_LOCK.acquire(blocking=False):
         raise AppError.pipeline_busy()
     try:
+        # Sinh SQL nằm TRONG cùng override_dataset và cùng lock: nó đọc lại file
+        # result của chính lượt này, mà đường dẫn file đó suy ra từ cfg đang bị
+        # ghi đè. Gọi ngoài khối này là đọc nhầm file của dataset mặc định.
         with override_dataset(dataset=dataset):
-            return _run_locked(limit=limit, on_progress=on_progress, verbose=verbose)
+            result: Dict[str, Any] = _run_locked(
+                limit=limit, on_progress=on_progress, verbose=verbose,
+            )
+            result["sql_file"] = None
+            if with_sql:
+                # Import trong thân hàm: bước sinh SQL không cần cho retrieval.
+                from pipeline.sql import run_infer
+
+                k: int = sql_top_k if sql_top_k is not None else cfg.pipeline.top_k_output
+                result["sql_file"] = run_infer(top_k=k)
+            return result
     finally:
         _RUN_LOCK.release()
 

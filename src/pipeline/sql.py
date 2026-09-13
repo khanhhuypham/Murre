@@ -145,21 +145,39 @@ def run_infer(top_k: int, llm: LLMGenerator | None = None) -> str:
     generator: LLMGenerator = llm if llm is not None else LLMGenerator()
 
     predicted_sqls: List[str] = []
-    for d in data:
+    for n, d in enumerate(data, start=1):
         table_block: str = _build_table_prompt(
             schema_strings=d.schemas[:top_k], dbs_dict=dbs_dict,
         )
         prompt: str = _ZERO_SHOT_PROMPT.format(table=table_block, question=d.utterance)
-        predicted_sqls.append(
-            _normalize_sql(raw=generator.generate(prompt=prompt, max_tokens=_SQL_MAX_TOKENS))
+        sql: str = _normalize_sql(
+            raw=generator.generate(prompt=prompt, max_tokens=_SQL_MAX_TOKENS)
         )
+        predicted_sqls.append(sql)
 
+        # Ghi thẳng vào record: câu sinh ra nằm ngay cạnh `gold_sql` và danh sách
+        # bảng đã dùng, đối chiếu được trong MỘT file thay vì mở song song
+        # turn{H}/dev.json với sql.{k}.txt rồi tự đếm dòng cho khớp.
+        d.sql = sql
+        d.sql_top_k = top_k
+
+        if n % 20 == 0 or n == len(data):
+            logger.info(f"[Infer] {n}/{len(data)} câu.")
+
+    # sql.{k}.txt giữ NGUYÊN định dạng cũ: công cụ chấm execution accuracy đọc
+    # file này, mỗi câu một khối, không có khoá JSON nào xen vào.
     sql_file: str = cfg.outputs.sql(k=top_k)
     os.makedirs(os.path.dirname(sql_file), exist_ok=True)
     with open(sql_file, "w", encoding="utf-8") as f:
         f.write("\n\n".join(predicted_sqls))
 
-    logger.info(f"[Infer] Đã sinh {len(predicted_sqls)} câu SQL → {sql_file}")
+    with open(result_file, "w", encoding="utf-8") as f:
+        json.dump([r.to_dict() for r in data], f, ensure_ascii=False, indent=2)
+
+    logger.info(
+        f"[Infer] Đã sinh {len(predicted_sqls)} câu SQL → {sql_file} "
+        f"| đã cập nhật {result_file}"
+    )
     return sql_file
 
 

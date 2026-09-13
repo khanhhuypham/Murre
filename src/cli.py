@@ -52,15 +52,17 @@ def cmd_run(args: argparse.Namespace) -> None:
                 os.remove(cache_file)
                 logger.info(f"[CLI] --force-embed → đã xoá {cache_file}, sẽ encode lại.")
 
-        result: Dict[str, Any] = run_pipeline(limit=args.limit, verbose=args.verbose)
+        result: Dict[str, Any] = run_pipeline(
+            limit=args.limit,
+            verbose=args.verbose,
+            with_sql=args.sql,
+            sql_top_k=args.top_k,
+        )
         _print_scores(metrics=result["metrics"], num_questions=result["num_questions"])
         print(f"  result → {result['result_file']}")
         print(f"  score  → {result['score_file']}")
-
-        if args.sql:
-            # Import trong thân hàm: bước sinh SQL không cần thiết cho retrieval.
-            from pipeline.sql import run_infer
-            print(f"  sql    → {run_infer(top_k=args.top_k)}")
+        if result["sql_file"]:
+            print(f"  sql    → {result['sql_file']}")
 
 
 def cmd_embed(args: argparse.Namespace) -> None:
